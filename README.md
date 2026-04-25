@@ -16,15 +16,27 @@ claude-workflow-bootstrap/
 
 ## 在新机器复刻
 
-**有 AI 帮忙 (推荐)**: 把 [`PROMPT.md`](PROMPT.md) 整段贴给新机器的 AI, 让它跑 setup。
+### 一行命令 (推荐)
 
-**手动**: 
+需要 macOS + Homebrew + git (Xcode CLT). repo 必须 public 才能无认证 clone:
 
 ```bash
-brew install gh    # 需要 Homebrew (https://brew.sh)
-git clone git@github.com:leoredrum/claude-workflow-bootstrap.git ~/claude-workflow-bootstrap
+curl -fsSL https://raw.githubusercontent.com/leoredrum/claude-workflow-bootstrap/main/install.sh | bash
+```
+
+跑完后再 `gh auth login` 走浏览器一次, 就齐了。
+
+### 让 AI 帮跑
+
+把 [`PROMPT.md`](PROMPT.md) 整段贴给新机器的 AI, 让它跑 setup + 给你核对清单。
+
+### 手动逐步
+
+```bash
+brew install gh
+git clone https://github.com/leoredrum/claude-workflow-bootstrap.git ~/claude-workflow-bootstrap
 cd ~/claude-workflow-bootstrap && bash bootstrap.sh
-gh auth login      # 走一次浏览器
+gh auth login
 ```
 
 ## 设计取舍
