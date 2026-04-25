@@ -1,0 +1,11 @@
+# 继承 templates/gitignore 同款
+.env
+.env.*
+!.env.example
+secrets.yaml
+*.secret
+*.pem
+*.key
+.DS_Store
+__pycache__/
+*.pyc
