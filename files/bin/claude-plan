@@ -37,8 +37,8 @@ setup_project_ai_dir() {
 
     # Create or update workflow files
     local workflow_files=(
-        "TASK.md:## Task\n\nDescribe the task here."
-        "RESULT.md:## Result\n\nDocument results here."
+        "TASK.md:## Task\n\nDescribe the task here.\n\n## Task Metadata\n- implementation_executor: [local-coder|claude-main|claude-subagent|manual]\n- workflow_status: [PASS|VIOLATION|BLOCKED]"
+        "RESULT.md:## Result\n\nDocument results here.\n\n## Implementation Report\n- implementation_executor: local-coder / claude-main / claude-subagent / manual\n- workflow_status: PASS / VIOLATION / BLOCKED"
         "PATCH.diff:# Patch File\n\nApply with: git apply .project-ai/PATCH.diff"
         "MEMORY.md:## Project Memory\n\nRecord project-specific learnings and context."
         "BUGS.md:## Known Bugs\n\nDocument bugs and their status."
@@ -82,6 +82,36 @@ This project uses the claude-plan wrapper for structured workflow management.
 - Update files during development
 - Review HANDOFF.md when taking over a project
 - Check MEMORY.md for project context
+
+### Implementation Boundary Rules (CRITICAL)
+
+1. **Claude Code Built-in Agents RESTRICTION**
+   - Claude Code built-in general-purpose agent is NOT allowed to perform coding implementation
+   - Built-in agents MAY ONLY: planning, review, summarize, search, diagnosis
+
+2. **Implementation Requirement**
+   - For formal development tasks, implementation MUST be done via: `local-coder .project-ai/TASK.md`
+   - This ensures proper local AI execution with full context
+
+3. **Claude Agent Scope**
+   - Claude main agent or Claude built-in sub-agents: planning, review, summarize, search, diagnosis ONLY
+   - NO direct code writing by Claude agents for formal development tasks
+
+4. **Stub Detection**
+   - If local-coder is still a stub, MUST report: "local-coder currently stub; implementation was not actually performed by local AI"
+
+5. **Violation Detection**
+   - If code was actually written by Claude itself or general-purpose agent, final report MUST mark as: WORKFLOW VIOLATION
+
+6. **Final Report Requirements**
+   Every development session MUST report:
+   - **implementation_executor**: local-coder / claude-main / claude-subagent / manual
+   - **workflow_status**: PASS / VIOLATION / BLOCKED
+   - Files changed (with paths)
+   - Commands run (with exit codes)
+   - Tests passed/failed (with counts)
+   - Remaining risks or concerns
+   - Next steps or handover information
 <!-- LEO_CLAUDE_PLAN_WORKFLOW_END -->
 EOF
 }
