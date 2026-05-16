@@ -63,6 +63,13 @@ cat <<'EOF'
 完了验证:
   gh auth status                    # 返 ✓ Logged in as <你>
   ai-project-init                   # 返用法说明
+  claude-plan                       # 返用法说明 (规划工具)
+  local-coder                       # 返用法说明 (本地编码工具)
+  get-secret                        # 返用法说明 (密钥管理工具)
+
+命令说明:
+  • claude      → 主命令 (日常交互、编程)
+  • claude-plan → 规划工具 (项目规划、架构设计、任务分解)
 
 可选: 从老机器 scp memory (Claude 私人偏好):
   scp -r <老机器>:~/.claude/projects/-Users-<你>/memory/ \

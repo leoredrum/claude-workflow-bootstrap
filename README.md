@@ -26,6 +26,21 @@ curl -fsSL https://raw.githubusercontent.com/leoredrum/claude-workflow-bootstrap
 
 跑完后再 `gh auth login` 走浏览器一次, 就齐了。
 
+### 验证安装
+
+运行以下命令确认所有工具正常:
+
+```bash
+# GitHub CLI 验证
+gh auth status                    # 应返回: ✓ Logged in as <你的用户名>
+
+# 项目工具验证
+ai-project-init                   # 应返回用法说明
+claude-plan                       # 应返回用法说明 (规划工具)
+local-coder                       # 应返回用法说明 (本地编码工具)
+get-secret                        # 应返回用法说明 (密钥管理工具)
+```
+
 ### 让 AI 帮跑
 
 把 [`PROMPT.md`](PROMPT.md) 整段贴给新机器的 AI, 让它跑 setup + 给你核对清单。
@@ -33,10 +48,55 @@ curl -fsSL https://raw.githubusercontent.com/leoredrum/claude-workflow-bootstrap
 ### 手动逐步
 
 ```bash
+# 1. 安装 GitHub CLI
 brew install gh
+
+# 2. Clone 仓库
 git clone https://github.com/leoredrum/claude-workflow-bootstrap.git ~/claude-workflow-bootstrap
+
+# 3. 运行 bootstrap 脚本
 cd ~/claude-workflow-bootstrap && bash bootstrap.sh
+
+# 4. GitHub 认证 (一次性)
 gh auth login
+
+# 5. 验证安装
+gh auth status                    # 应返回: ✓ Logged in as <你的用户名>
+ai-project-init                   # 应返回用法说明
+claude-plan                       # 应返回用法说明 (规划工具)
+local-coder                       # 应返回用法说明 (本地编码工具)
+get-secret                        # 应返回用法说明 (密钥管理工具)
+```
+
+## Claude vs Claude-plan
+
+- **claude** → 主命令 (日常交互、编程)
+  - 直接对话式编程
+  - 快速原型开发
+  - 代码重构和调试
+  - 文件操作和 Git 管理
+
+- **claude-plan** → 规划工具 (项目规划、架构设计、任务分解)
+  - 正式开发模式
+  - 自动创建 `.project-ai/` 工作目录
+  - 结构化项目规划
+  - 任务分解和依赖管理
+  - 架构设计文档生成
+
+## Secret 管理规则
+
+⚠️ **安全第一**: 永远不要把以下内容写进 git (代码/文档/commit msg 都不行):
+- Cookie / 密码 / Token / 真实凭证
+- API Keys / Access Tokens / Session IDs
+- 私人配置 / 环境变量 / 凭证文件
+
+**推荐做法**:
+```bash
+# 使用 get-secret 从 macOS Keychain 读取敏感信息
+get-secret <service-name> <account-name>
+
+# 例如: 获取 GitHub Token
+get-secret github api-token
 ```
 
 ## 设计取舍

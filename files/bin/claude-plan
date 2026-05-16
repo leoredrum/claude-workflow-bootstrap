@@ -1,0 +1,129 @@
+#!/bin/bash
+# claude-plan - Project workflow setup wrapper for Claude Code
+# Sets up .project-ai/ directory structure and ensures CLAUDE.md has workflow block
+
+set -euo pipefail
+
+# Colors for output
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly NC='\033[0m' # No Color
+
+# Functions
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+# Create .project-ai directory structure
+setup_project_ai_dir() {
+    local project_dir="$1"
+    local ai_dir="${project_dir}/.project-ai"
+
+    if [[ -d "$ai_dir" ]]; then
+        log_info ".project-ai directory already exists"
+    else
+        mkdir -p "$ai_dir"
+        log_info "Created .project-ai directory"
+    fi
+
+    # Create or update workflow files
+    local workflow_files=(
+        "TASK.md:## Task\n\nDescribe the task here."
+        "RESULT.md:## Result\n\nDocument results here."
+        "PATCH.diff:# Patch File\n\nApply with: git apply .project-ai/PATCH.diff"
+        "MEMORY.md:## Project Memory\n\nRecord project-specific learnings and context."
+        "BUGS.md:## Known Bugs\n\nDocument bugs and their status."
+        "DECISIONS.md:## Decisions\n\nRecord architectural and implementation decisions."
+        "HANDOFF.md:## Handoff\n\nInformation for next developer/session."
+    )
+
+    for entry in "${workflow_files[@]}"; do
+        local filename="${entry%%:*}"
+        local content="${entry#*:}"
+        local filepath="${ai_dir}/${filename}"
+
+        if [[ -f "$filepath" ]]; then
+            log_info "${filename} already exists"
+        else
+            echo -e "$content" > "$filepath"
+            log_info "Created ${filename}"
+        fi
+    done
+}
+
+# Workflow block content
+get_workflow_block() {
+    cat <<'EOF'
+<!-- LEO_CLAUDE_PLAN_WORKFLOW_START -->
+## Claude Plan Workflow
+
+This project uses the claude-plan wrapper for structured workflow management.
+
+### Workflow Files (.project-ai/)
+- **TASK.md**: Current task description and requirements
+- **RESULT.md**: Results and outcomes from completed tasks
+- **PATCH.diff**: Patches to be applied with `git apply .project-ai/PATCH.diff`
+- **MEMORY.md**: Project-specific learnings and context
+- **BUGS.md**: Known bugs and their status
+- **DECISIONS.md**: Architectural and implementation decisions
+- **HANDOFF.md**: Information for handoff between sessions/developers
+
+### Usage
+- Start session: `claude-plan` (automatically sets up workflow structure)
+- Update files during development
+- Review HANDOFF.md when taking over a project
+- Check MEMORY.md for project context
+<!-- LEO_CLAUDE_PLAN_WORKFLOW_END -->
+EOF
+}
+
+# Ensure CLAUDE.md has workflow block
+setup_claude_md() {
+    local project_dir="$1"
+    local claude_md="${project_dir}/CLAUDE.md"
+    local marker_start="<!-- LEO_CLAUDE_PLAN_WORKFLOW_START -->"
+    local marker_end="<!-- LEO_CLAUDE_PLAN_WORKFLOW_END -->"
+
+    # Check if file exists and has workflow block
+    if [[ -f "$claude_md" ]]; then
+        if grep -q "$marker_start" "$claude_md"; then
+            log_info "CLAUDE.md already contains workflow block"
+        else
+            log_info "Appending workflow block to existing CLAUDE.md"
+            echo "" >> "$claude_md"
+            get_workflow_block >> "$claude_md"
+        fi
+    else
+        log_info "Creating new CLAUDE.md with workflow block"
+        get_workflow_block > "$claude_md"
+    fi
+}
+
+# Main execution
+main() {
+    local current_dir="$(pwd)"
+
+    log_info "Setting up Claude Plan workflow in: $current_dir"
+
+    # Setup .project-ai directory
+    setup_project_ai_dir "$current_dir"
+
+    # Setup CLAUDE.md
+    setup_claude_md "$current_dir"
+
+    # Launch original claude command with all arguments
+    log_info "Launching Claude Code..."
+    exec ~/.local/bin/claude "$@"
+}
+
+# Run main
+main "$@"
