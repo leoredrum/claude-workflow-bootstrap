@@ -12,6 +12,10 @@ from pathlib import Path
 
 import requests
 
+# Add workflow_db to path
+sys.path.insert(0, str(Path(__file__).parent))
+from workflow_db import get_db
+
 # Hard guardrails - configurable via env
 MAX_FILES_PER_RUN = int(os.getenv("LOCAL_CODER_MAX_FILES", "5"))
 MAX_FILE_LINES = int(os.getenv("LOCAL_CODER_MAX_LINES", "3000"))
@@ -159,6 +163,224 @@ def parse_response(raw_output: str) -> dict:
     raise ValueError("No JSON found in output")
 
 
+def check_unsafe_overwrite(project_root: Path, commands: list) -> tuple:
+    """Check for unsafe file overwrites."""
+    unsafe = []
+    safe_commands = []
+
+    for cmd in commands:
+        cmd_type = cmd.get("type")
+        path_str = cmd.get("path", "")
+
+        if cmd_type == "write_file":
+            file_path = project_root / path_str
+
+            # Check if file exists
+            if file_path.exists():
+                # Check for explicit allow_overwrite
+                allow_overwrite = cmd.get("allow_overwrite", False)
+                has_replace_keyword = "replace entire file" in str(commands).lower()
+
+                # Protected files
+                protected = ["AGENTS.md", "CLAUDE.md", "README.md", ".gitignore", "setup.py", "pyproject.toml", "package.json", "tsconfig.json"]
+                is_protected = any(p in path_str for p in protected)
+
+                if not allow_overwrite and not has_replace_keyword:
+                    if is_protected:
+                        unsafe.append({
+                            "path": path_str,
+                            "reason": "protected file cannot be overwritten",
+                            "suggestion": "use append_file or insert_after"
+                        })
+                    else:
+                        # Check file size
+                        try:
+                            line_count = len(file_path.read_text().splitlines())
+                            if line_count > 200:
+                                unsafe.append({
+                                    "path": path_str,
+                                    "reason": f"file too large ({line_count} lines) to overwrite",
+                                    "suggestion": "use insert_after, insert_before, or replace_block"
+                                })
+                            else:
+                                # Small file, allow but convert to safer operation
+                                safe_commands.append({
+                                    **cmd,
+                                    "type": "write_file_safe",
+                                    "original_type": "write_file",
+                                    "note": "existing file, verify output"
+                                })
+                        except Exception:
+                            safe_commands.append(cmd)
+                else:
+                    safe_commands.append(cmd)
+            else:
+                safe_commands.append(cmd)
+        else:
+            safe_commands.append(cmd)
+
+    return unsafe, safe_commands
+
+
+def validate_diff(project_root: Path) -> dict:
+    """Validate git diff for safety."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--numstat"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        additions = 0
+        deletions = 0
+
+        for line in result.stdout.strip().splitlines():
+            if line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    additions += int(parts[0]) if parts[0] != "-" else 0
+                    deletions += int(parts[1]) if parts[1] != "-" else 0
+
+        # Safety checks
+        is_safe = True
+        reasons = []
+
+        if deletions > 20:
+            is_safe = False
+            reasons.append(f"Too many deletions: {deletions} lines")
+
+        if deletions > additions * 2:
+            is_safe = False
+            reasons.append(f"Deletions ({deletions}) exceed 2x additions ({additions})")
+
+        return {
+            "is_safe": is_safe,
+            "additions": additions,
+            "deletions": deletions,
+            "reasons": reasons
+        }
+    except Exception as e:
+        return {"is_safe": False, "additions": 0, "deletions": 0, "reasons": [str(e)]}
+
+
+
+def extract_task_constraints(task_content: str) -> dict:
+    """Extract allowed_files and forbidden_new_files from TASK.md."""
+    constraints = {
+        "allowed_files": [],
+        "forbidden_new_files": False
+    }
+    
+    lines = task_content.splitlines()
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Parse YAML-style allowed_files
+        if line.startswith("allowed_files:"):
+            continue
+        if line.startswith("- ") or line.startswith("  -"):
+            file_path = line.split("-", 1)[1].strip()
+            if file_path and file_path not in constraints["allowed_files"]:
+                constraints["allowed_files"].append(file_path)
+        
+        # Parse forbidden_new_files
+        if "forbidden_new_files:" in line and "true" in line.lower():
+            constraints["forbidden_new_files"] = True
+    
+    return constraints
+
+
+def validate_target_files(project_root: Path, commands: list, 
+                         allowed_files: list, forbidden_new: bool) -> tuple:
+    """Validate commands against target file constraints."""
+    violations = []
+    safe_commands = []
+    
+    for cmd in commands:
+        cmd_type = cmd.get("type")
+        path_str = cmd.get("path", "")
+        
+        if not path_str:
+            safe_commands.append(cmd)
+            continue
+        
+        # Check if this is a file creation
+        is_new_file = cmd_type in ["write_file"] and not (project_root / path_str).exists()
+        
+        # Check forbidden_new_files
+        if forbidden_new and is_new_file:
+            violations.append({
+                "type": "forbidden_new_file",
+                "path": path_str,
+                "reason": "Task forbids creating new files"
+            })
+            continue
+        
+        # Check if file is in allowed list
+        if allowed_files:
+            path_in_allowed = any(
+                path_str == af or path_str.endswith("/" + af) or "/" + af in path_str
+                for af in allowed_files
+            )
+            
+            if not path_in_allowed and cmd_type in ["write_file", "edit_file", "append_file"]:
+                violations.append({
+                    "type": "not_allowed_file",
+                    "path": path_str,
+                    "reason": f"File not in allowed_files: {allowed_files}"
+                })
+                continue
+        
+        safe_commands.append(cmd)
+    
+    return violations, safe_commands
+
+
+def validate_applied_files(project_root: Path, allowed_files: list = None, 
+                          required_files: list = None) -> dict:
+    """Validate that applied changes match constraints."""
+    import subprocess
+    
+    # Get changed files
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True
+        )
+        applied = [f for f in result.stdout.strip().splitlines() if f]
+    except:
+        applied = []
+    
+    validation = {
+        "applied_files": applied,
+        "unexpected_files": [],
+        "missing_files": [],
+        "target_file_modified": False
+    }
+    
+    # Check for unexpected files
+    if allowed_files:
+        for f in applied:
+            if not any(f == af or f.endswith("/" + af) for af in allowed_files):
+                validation["unexpected_files"].append(f)
+    
+    # Check for missing required files
+    if required_files:
+        for req in required_files:
+            if not any(req == f or req.endswith("/" + f) for f in applied):
+                validation["missing_files"].append(req)
+    
+    # Check if any target file was modified
+    validation["target_file_modified"] = len(applied) > 0 and len(validation["unexpected_files"]) == 0
+    
+    return validation
+
+
 def is_safe_path(path: Path, project_root: Path) -> bool:
     """Check if path is safe to write."""
     try:
@@ -191,7 +413,7 @@ def is_safe_path(path: Path, project_root: Path) -> bool:
 
 
 def apply_commands(commands: list, project_root: Path, project_ai_dir: Path) -> tuple:
-    """Apply write/append commands with limits."""
+    """Apply write/append commands with safety checks."""
     applied = []
     files_touched = []
 
@@ -200,7 +422,15 @@ def apply_commands(commands: list, project_root: Path, project_ai_dir: Path) -> 
         record_attempt(project_ai_dir, f"Too many files: {len(commands)}", [], "BLOCKED")
         raise ValueError(f"Exceeds MAX_FILES_PER_RUN ({MAX_FILES_PER_RUN}): {len(commands)} commands")
 
-    for cmd in commands:
+    # Check for unsafe overwrites
+    unsafe, safe_commands = check_unsafe_overwrite(project_root, commands)
+
+    if unsafe:
+        reasons = "; ".join([f"{u['path']}: {u['reason']}" for u in unsafe])
+        record_attempt(project_ai_dir, f"Unsafe overwrite blocked: {reasons}", files_touched, "BLOCKED")
+        raise ValueError(f"BLOCKED - Unsafe overwrite: {reasons}")
+
+    for cmd in safe_commands:
         cmd_type = cmd.get("type")
         path_str = cmd.get("path", "")
         content = cmd.get("content", "")
@@ -211,33 +441,87 @@ def apply_commands(commands: list, project_root: Path, project_ai_dir: Path) -> 
         path = project_root / path_str
         files_touched.append(path_str)
 
-        if not is_safe_path(path, project_root):
-            print(f"WARNING: Skipping unsafe path: {path_str}", file=sys.stderr)
-            record_attempt(project_ai_dir, f"Unsafe path: {path_str}", files_touched, "PARTIAL")
-            continue
+        # Handle new command types
+        if cmd_type == "insert_after":
+            marker = cmd.get("marker", "")
+            if path.exists() and marker:
+                try:
+                    file_content = path.read_text()
+                    if marker in file_content:
+                        new_content = file_content.replace(marker, marker + "\n" + content)
+                        path.write_text(new_content)
+                        applied.append(str(path.relative_to(project_root)))
+                    else:
+                        print(f"WARNING: Marker not found in {path_str}", file=sys.stderr)
+                except Exception as e:
+                    print(f"WARNING: insert_after failed: {e}", file=sys.stderr)
+        elif cmd_type == "insert_before":
+            marker = cmd.get("marker", "")
+            if path.exists() and marker:
+                try:
+                    file_content = path.read_text()
+                    if marker in file_content:
+                        new_content = file_content.replace(marker, content + "\n" + marker)
+                        path.write_text(new_content)
+                        applied.append(str(path.relative_to(project_root)))
+                    else:
+                        print(f"WARNING: Marker not found in {path_str}", file=sys.stderr)
+                except Exception as e:
+                    print(f"WARNING: insert_before failed: {e}", file=sys.stderr)
+        elif cmd_type == "replace_block":
+            start_marker = cmd.get("start_marker", "")
+            end_marker = cmd.get("end_marker", "")
+            if path.exists() and start_marker and end_marker:
+                try:
+                    file_content = path.read_text()
+                    start_idx = file_content.find(start_marker)
+                    end_idx = file_content.find(end_marker) + len(end_marker)
+                    if start_idx >= 0 and end_idx > start_idx:
+                        new_content = file_content[:start_idx] + content + file_content[end_idx:]
+                        path.write_text(new_content)
+                        applied.append(str(path.relative_to(project_root)))
+                    else:
+                        print(f"WARNING: Block markers not found in {path_str}", file=sys.stderr)
+                except Exception as e:
+                    print(f"WARNING: replace_block failed: {e}", file=sys.stderr)
+        elif cmd_type == "write_file" or cmd_type == "write_file_safe":
+            # Original write_file logic
+            if not is_safe_path(path, project_root):
+                print(f"WARNING: Skipping unsafe path: {path_str}", file=sys.stderr)
+                record_attempt(project_ai_dir, f"Unsafe path: {path_str}", files_touched, "PARTIAL")
+                continue
 
-        # Check file size
-        if not check_file_size(path, MAX_FILE_LINES):
-            print(f"WARNING: File too large (> {MAX_FILE_LINES} lines): {path_str}", file=sys.stderr)
-            record_attempt(project_ai_dir, f"File too large: {path_str}", files_touched, "PARTIAL")
-            raise ValueError(f"File exceeds MAX_FILE_LINES: {path_str}")
+            if not check_file_size(path, MAX_FILE_LINES):
+                print(f"WARNING: File too large: {path_str}", file=sys.stderr)
+                record_attempt(project_ai_dir, f"File too large: {path_str}", files_touched, "PARTIAL")
+                raise ValueError(f"File exceeds MAX_FILE_LINES: {path_str}")
 
-        if DRY_RUN:
-            print(f"[DRY-RUN] Would {cmd_type}: {path_str}", file=sys.stderr)
-            applied.append(str(path.relative_to(project_root)))
-            continue
+            if DRY_RUN:
+                print(f"[DRY-RUN] Would write: {path_str}", file=sys.stderr)
+                applied.append(str(path.relative_to(project_root)))
+                continue
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        if cmd_type == "write_file":
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
             applied.append(str(path.relative_to(project_root)))
+
         elif cmd_type == "append_file":
+            if not is_safe_path(path, project_root):
+                print(f"WARNING: Skipping unsafe path: {path_str}", file=sys.stderr)
+                record_attempt(project_ai_dir, f"Unsafe path: {path_str}", files_touched, "PARTIAL")
+                continue
+
+            if DRY_RUN:
+                print(f"[DRY-RUN] Would append: {path_str}", file=sys.stderr)
+                applied.append(str(path.relative_to(project_root)))
+                continue
+
+            path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a") as f:
                 f.write(content)
             applied.append(str(path.relative_to(project_root)))
 
-    return applied, len(commands)
+    return applied, len(safe_commands)
 
 
 def generate_patch(project_root: Path, project_ai_dir: Path):
@@ -267,22 +551,55 @@ def generate_patch(project_root: Path, project_ai_dir: Path):
 
 
 def write_result(project_ai_dir: Path, summary: str, files_changed: list,
-                 tests: list, risks: list, status: str):
-    """Write RESULT.md."""
+                 tests: list, risks: list, status: str,
+                 unsafe_write_blocked: bool = False,
+                 deletion_count: int = 0,
+                 addition_count: int = 0,
+                 allowed_files: list = None,
+                 applied_files: list = None,
+                 unexpected_files: list = None,
+                 target_file_modified: bool = None):
+    """Write RESULT.md with safety info."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    unsafe_status = "BLOCKED" if unsafe_write_blocked else status
 
     changed_list = "\n".join(f"- {f}" for f in files_changed) if files_changed else "- No files changed"
     tests_list = "\n".join(f"- {t}" for t in tests) if tests else "- No tests suggested"
     risks_list = "\n".join(f"- {r}" for r in risks) if risks else "- No risks identified"
 
+    diff_safe = deletion_count <= addition_count * 2 and deletion_count <= 20
+    
+    # Constraint validation section
+    constraint_section = ""
+    if allowed_files is not None:
+        allowed_list = "\n".join(f"  - {f}" for f in allowed_files)
+        constraint_section = f"""
+
+## Constraint Validation
+
+- **allowed_files:**
+{allowed_list}
+- **applied_files:** {applied_files if applied_files else []}
+- **unexpected_files:** {unexpected_files if unexpected_files else []}
+- **target_file_modified:** {target_file_modified if target_file_modified is not None else "N/A"}
+"""
+
     content = f"""# Implementation Result
 
 **Date:** {now}
-**Status:** {status}
+**Status:** {unsafe_status}
 **implementation_executor:** local-coder
 **backend:** ollama
 **model:** {os.getenv('LOCAL_CODER_MODEL', 'qwen2.5-coder:32b')}
 
+## Safety Checks
+
+- **unsafe_write_blocked:** {unsafe_write_blocked}
+- **deletion_count:** {deletion_count}
+- **addition_count:** {addition_count}
+- **diff_safe:** {diff_safe}
+{constraint_section}
 ## Summary
 
 {summary}
@@ -342,71 +659,185 @@ def main():
         print(f"ERROR: .project-ai directory not found at {project_ai_dir}", file=sys.stderr)
         sys.exit(1)
 
-    # Read task for loop detection
-    task_content = (project_ai_dir / "TASK.md").read_text()
-    task_hash = hashlib.md5(task_content.encode()).hexdigest()[:8]
-
-    # Check loop detection BEFORE running
-    if check_loop_detection(project_ai_dir, task_hash):
-        record_violation(project_ai_dir, f"Loop detected: task_hash {task_hash} attempted 3+ times")
-        print(f"ERROR: Loop detected - same task attempted 3+ times. See ATTEMPT_HISTORY.md and WORKFLOW_VIOLATIONS.md", file=sys.stderr)
-        sys.exit(1)
-
-    context = read_context_files(project_ai_dir)
-    prompt = build_prompt(context)
+    # Initialize database
+    db = get_db(project_root)
+    attempt_id: int = 0
 
     try:
-        raw_output = call_ollama(prompt, args.model, args.endpoint)
-    except requests.RequestException as e:
-        (project_ai_dir / "RESULT.md").write_text(
-            f"# Implementation Result\n\n**Status:** BLOCKED\n\n**Error:** Failed to call Ollama: {e}"
+        # Read task for loop detection
+        task_content = (project_ai_dir / "TASK.md").read_text()
+        task_hash = hashlib.md5(task_content.encode()).hexdigest()[:8]
+
+        # Check loop detection BEFORE running
+        if check_loop_detection(project_ai_dir, task_hash):
+            record_violation(project_ai_dir, f"Loop detected: task_hash {task_hash} attempted 3+ times")
+            db.add_violation(None, f"Loop detected: task_hash {task_hash} attempted 3+ times")
+            print(f"ERROR: Loop detected - same task attempted 3+ times. See ATTEMPT_HISTORY.md and WORKFLOW_VIOLATIONS.md", file=sys.stderr)
+            sys.exit(1)
+
+        # Create task and start attempt in database
+        task_id = db.create_task(summary=task_content[:200], full_content=task_content)
+        attempt_id = db.start_attempt(task_id, executor="local-coder", backend="ollama", model=args.model)
+
+        context = read_context_files(project_ai_dir)
+        prompt = build_prompt(context)
+
+        try:
+            raw_output = call_ollama(prompt, args.model, args.endpoint)
+        except requests.RequestException as e:
+            (project_ai_dir / "RESULT.md").write_text(
+                f"# Implementation Result\n\n**Status:** BLOCKED\n\n**Error:** Failed to call Ollama: {e}"
+            )
+            record_attempt(project_ai_dir, f"Ollama error: {e}", [], "BLOCKED")
+            db.complete_attempt(attempt_id, "blocked", f"Ollama error: {e}")
+            sys.exit(1)
+
+        (project_ai_dir / "local-coder-raw-output.txt").write_text(raw_output)
+
+        try:
+            response = parse_response(raw_output)
+        except (ValueError, json.JSONDecodeError) as e:
+            (project_ai_dir / "RESULT.md").write_text(
+                f"# Implementation Result\n\n**Status:** FAILED\n\n**Error:** Failed to parse model output as JSON: {e}\n\n"
+                f"Raw output saved to local-coder-raw-output.txt"
+            )
+            record_attempt(project_ai_dir, f"Parse error: {e}", [], "FAILED")
+            db.complete_attempt(attempt_id, "failed", f"Parse error: {e}")
+            sys.exit(1)
+
+        commands = response.get("commands", [])
+        
+        # Extract and validate target file constraints
+        constraints = extract_task_constraints(task_content)
+        allowed_files = constraints.get("allowed_files", [])
+        forbidden_new = constraints.get("forbidden_new_files", False)
+        
+        # Validate commands against constraints
+        violations, safe_commands = validate_target_files(project_root, commands, allowed_files, forbidden_new)
+        
+        if violations:
+            # Build violation message
+            violation_msgs = []
+            for v in violations:
+                violation_msgs.append(f"- {v['path']}: {v['reason']}")
+            
+            error_msg = "Target file constraint violations:\n" + "\n".join(violation_msgs)
+            
+            write_result(
+                project_ai_dir,
+                f"Task constraint violation: {len(violations)} command(s) blocked",
+                [],
+                [],
+                violation_msgs,
+                "BLOCKED",
+                unsafe_write_blocked=False,
+                deletion_count=0,
+                addition_count=0
+            )
+            record_attempt(project_ai_dir, f"Constraint violation: {len(violations)} blocked", [], "BLOCKED")
+            db.add_violation(attempt_id, f"Target file constraints: {violation_msgs}")
+            db.complete_attempt(attempt_id, "blocked", f"Task constraint violation")
+            print(f"ERROR: Task constraint violations detected - see RESULT.md", file=sys.stderr)
+            sys.exit(1)
+        
+        # Apply validated commands
+        try:
+            files_changed, command_count = apply_commands(safe_commands, project_root, project_ai_dir)
+        except ValueError as e:
+            # Guardrail violation - unsafe overwrite blocked
+            error_msg = str(e)
+            is_unsafe_write = "Unsafe overwrite" in error_msg or "BLOCKED" in error_msg
+
+            write_result(
+                project_ai_dir,
+                f"Guardrail violation: {error_msg}",
+                [],
+                [],
+                [error_msg],
+                "BLOCKED",
+                unsafe_write_blocked=is_unsafe_write,
+                deletion_count=0,
+                addition_count=0
+            )
+            record_attempt(project_ai_dir, f"Guardrail: {e}", [], "BLOCKED")
+            db.complete_attempt(attempt_id, "blocked", f"Guardrail violation: {e}")
+            sys.exit(1)
+
+        # Record file changes in database
+        for file_path in files_changed:
+            db.add_file_change(attempt_id, file_path, "write")
+
+        generate_patch(project_root, project_ai_dir)
+
+        # Post-validation: check applied files match constraints
+        applied_validation = validate_applied_files(project_root, allowed_files if allowed_files else None)
+        
+        # Add unexpected files to risks
+        if applied_validation["unexpected_files"]:
+            risks.extend([
+                f"Unexpected file modified: {f}" 
+                for f in applied_validation["unexpected_files"]
+            ])
+            if not applied_validation["target_file_modified"]:
+                status = "BLOCKED"
+        
+        # Validate diff for safety
+        diff_validation = validate_diff(project_root)
+        deletion_count = diff_validation["deletions"]
+        addition_count = diff_validation["additions"]
+
+        summary = response.get("summary", "No summary provided")
+        tests = response.get("tests", [])
+        risks = response.get("risks", [])
+        
+        # Track constraint validation in summary
+        if allowed_files:
+            summary += f"\n\n**Constraints:** allowed_files={allowed_files}, forbidden_new_files={forbidden_new}"
+            summary += f"\n**Applied files:** {applied_validation['applied_files']}"
+            if applied_validation["unexpected_files"]:
+                summary += f"\n**Unexpected files:** {applied_validation['unexpected_files']}"
+
+        status = "PASS"
+        if not files_changed:
+            status = "PARTIAL"
+        if risks:
+            status = "PARTIAL"
+        if not diff_validation["is_safe"]:
+            status = "BLOCKED"
+            risks.extend(diff_validation["reasons"])
+
+        write_result(
+            project_ai_dir, summary, files_changed, tests, risks, status,
+            unsafe_write_blocked=False,
+            deletion_count=deletion_count,
+            addition_count=addition_count,
+            allowed_files=allowed_files if allowed_files else None,
+            applied_files=applied_validation.get("applied_files") if allowed_files else None,
+            unexpected_files=applied_validation.get("unexpected_files") if allowed_files else None,
+            target_file_modified=applied_validation.get("target_file_modified") if allowed_files else None
         )
-        record_attempt(project_ai_dir, f"Ollama error: {e}", [], "BLOCKED")
-        sys.exit(1)
+        update_handover(project_ai_dir, summary)
 
-    (project_ai_dir / "local-coder-raw-output.txt").write_text(raw_output)
+        # Record handoff in database
+        risks_str = "; ".join(risks) if risks else ""
+        db.add_handoff(attempt_id, summary, risks_str)
 
-    try:
-        response = parse_response(raw_output)
-    except (ValueError, json.JSONDecodeError) as e:
-        (project_ai_dir / "RESULT.md").write_text(
-            f"# Implementation Result\n\n**Status:** FAILED\n\n**Error:** Failed to parse model output as JSON: {e}\n\n"
-            f"Raw output saved to local-coder-raw-output.txt"
-        )
-        record_attempt(project_ai_dir, f"Parse error: {e}", [], "FAILED")
-        sys.exit(1)
+        # Record patch in database
+        patch_file = project_ai_dir / "PATCH.diff"
+        if patch_file.exists():
+            patch_content = patch_file.read_text()
+            db.add_patch(attempt_id, patch_content)
 
-    commands = response.get("commands", [])
-    try:
-        files_changed, command_count = apply_commands(commands, project_root, project_ai_dir)
-    except ValueError as e:
-        # Guardrail violation
-        (project_ai_dir / "RESULT.md").write_text(
-            f"# Implementation Result\n\n**Status:** BLOCKED\n\n**Error:** Guardrail violation: {e}"
-        )
-        record_attempt(project_ai_dir, f"Guardrail: {e}", [], "BLOCKED")
-        sys.exit(1)
+        # Complete the attempt in database
+        db.complete_attempt(attempt_id, status.lower(), summary)
 
-    generate_patch(project_root, project_ai_dir)
+        # Record successful attempt (legacy)
+        record_attempt(project_ai_dir, summary, files_changed, status)
 
-    summary = response.get("summary", "No summary provided")
-    tests = response.get("tests", [])
-    risks = response.get("risks", [])
-
-    status = "PASS"
-    if not files_changed:
-        status = "PARTIAL"
-    if risks:
-        status = "PARTIAL"
-
-    write_result(project_ai_dir, summary, files_changed, tests, risks, status)
-    update_handover(project_ai_dir, summary)
-
-    # Record successful attempt
-    record_attempt(project_ai_dir, summary, files_changed, status)
-
-    print(f"local-coder complete: {status}", file=sys.stderr)
-    print(f"Files changed: {len(files_changed)}", file=sys.stderr)
+        print(f"local-coder complete: {status}", file=sys.stderr)
+        print(f"Files changed: {len(files_changed)}", file=sys.stderr)
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":
