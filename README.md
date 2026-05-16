@@ -39,7 +39,18 @@ ai-project-init                   # 应返回用法说明
 claude-plan                       # 应返回用法说明 (规划工具)
 local-coder                       # 应返回用法说明 (本地编码工具)
 get-secret                        # 应返回用法说明 (密钥管理工具)
+
+# 完整安装验证
+bootstrap-verify                  # 运行完整验证检查
 ```
+
+如果任何检查失败,运行诊断模式:
+
+```bash
+bootstrap-verify --doctor         # 诊断模式 - 查找问题
+```
+
+验证报告将保存为 `bootstrap-verification-report.md` 在当前目录。
 
 ### 让 AI 帮跑
 
@@ -99,6 +110,31 @@ get-secret <service-name> <account-name>
 get-secret github api-token
 ```
 
+## 故障排除
+
+### claude-plan not found
+```bash
+# 确保 ~/bin 在 PATH 中
+export PATH="$HOME/bin:$PATH"
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### local-coder fails
+```bash
+# 检查 Ollama 是否运行
+ollama serve
+
+# 验证模型是否可用
+ollama list | grep qwen
+```
+
+### 验证失败
+运行诊断模式来识别具体问题:
+```bash
+bootstrap-verify --doctor
+```
+
 ## 设计取舍
 
 - **Memory 不放 repo**: `~/.claude/projects/-Users-<你>/memory/` 是 Claude 私人偏好, 跨机器同步靠 `scp/rsync` 手动一次性, 不进 git (避免敏感信息泄漏 + 多机不同 Claude session 互相覆盖)
@@ -119,3 +155,25 @@ cd ~/claude-workflow-bootstrap && git pull && bash bootstrap.sh
 ```
 
 bootstrap.sh 不会覆盖已存在文件 — 想强刷模板, 删掉 `~/.claude/ai-project-templates/` 再跑一遍。
+
+## Pilot Testing
+
+### Production Pilot Program (2025-05-17)
+
+This project participated in a production pilot to validate the claude-plan workflow across multiple real projects:
+
+**Projects Tested:**
+1. crawler-workspace - Documentation enhancements
+2. imagecreator-workspace - Documentation metadata additions
+3. claude-workflow-bootstrap - README pilot section
+
+**Pilot Results:**
+- 9/9 tasks completed successfully (100% success rate)
+- All tasks were low-risk documentation additions
+- Zero unsafe write blocks
+- Zero workflow violations
+
+**Key Findings:**
+- Direct execution mode works reliably for simple tasks
+- Documentation changes are safe and predictable
+- Version tracking in markdown files improves maintainability

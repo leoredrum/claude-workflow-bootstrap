@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_SCRIPT="$SCRIPT_DIR/workflow_orchestrator.py"
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: workflow-orchestrator <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  start --worker-id <id> --type <implementer|reviewer|tester>  Start a worker"
+    echo "  status                                                  Show queue status"
+    echo "  queue                                                   Show task queue"
+    echo "  workers                                                 Show workers"
+    echo "  enqueue \"<summary>\" [--type <type>]                     Add task to queue"
+    echo "  retry <task-id>                                         Retry a task"
+    echo "  recover                                                Recover stale leases"
+    echo "  stop                                                    Graceful stop"
+    exit 1
+fi
+
+python3 "$PYTHON_SCRIPT" "$@"

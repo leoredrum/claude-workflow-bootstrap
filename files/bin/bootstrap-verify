@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_SCRIPT="$SCRIPT_DIR/bootstrap_self_test.py"
+
+if [[ ! -f "$PYTHON_SCRIPT" ]]; then
+    echo "Error: bootstrap_self_test.py not found at $PYTHON_SCRIPT"
+    echo "Please ensure claude-workflow-bootstrap is properly installed."
+    exit 1
+fi
+
+# Default to report in current directory
+REPORT_DIR="${1:-.}"
+
+if [[ "$1" == "--doctor" ]]; then
+    python3 "$PYTHON_SCRIPT" --doctor
+elif [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
+    echo "bootstrap-verify - Verify claude-plan workflow installation"
+    echo ""
+    echo "Usage:"
+    echo "  bootstrap-verify [--doctor] [--report-dir DIR]"
+    echo ""
+    echo "Options:"
+    echo "  --doctor       Run diagnostic mode to find issues"
+    echo "  --report-dir   Directory for verification report (default: current)"
+    echo "  --help, -h     Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  bootstrap-verify"
+    echo "  bootstrap-verify --doctor"
+    echo "  bootstrap-verify --report-dir /tmp"
+else
+    python3 "$PYTHON_SCRIPT" --report-dir "$REPORT_DIR"
+fi

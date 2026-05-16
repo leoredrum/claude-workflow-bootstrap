@@ -49,7 +49,14 @@ echo
 cd "$REPO_DIR"
 bash bootstrap.sh
 
-# 4. 下一步
+# 4. Install bootstrap-verify
+echo "==> Installing bootstrap-verify..."
+INSTALL_DIR="$HOME/AI/local-coder"
+mkdir -p "$INSTALL_DIR/bin"
+install -m 755 "$REPO_DIR/files/bin/bootstrap_self_test.py" "$INSTALL_DIR/bin/"
+install -m 755 "$REPO_DIR/files/bin/bootstrap-verify" "$HOME/bin/"
+
+# 5. 下一步
 cat <<'EOF'
 
 ═════════════════════════════════════════════════════════════
@@ -62,6 +69,7 @@ cat <<'EOF'
 
 完了验证:
   gh auth status                    # 返 ✓ Logged in as <你>
+  bootstrap-verify                  # 验证安装完整性
   ai-project-init                   # 返用法说明
   claude-plan                       # 返用法说明 (规划工具)
   local-coder                       # 返用法说明 (本地编码工具)
@@ -71,9 +79,13 @@ cat <<'EOF'
   • claude      → 主命令 (日常交互、编程)
   • claude-plan → 规划工具 (项目规划、架构设计、任务分解)
 
+验证安装:
+  bootstrap-verify                  # 运行完整验证
+  bootstrap-verify --doctor         # 诊断模式
+
 可选: 从老机器 scp memory (Claude 私人偏好):
   scp -r <老机器>:~/.claude/projects/-Users-<你>/memory/ \
-        ~/.claude/projects/-Users-$(whoami)/
+        ~/.claude/projects/-Users-$(whoami)//
 
 ═════════════════════════════════════════════════════════════
 EOF

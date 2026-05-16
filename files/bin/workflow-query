@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_SCRIPT="$SCRIPT_DIR/workflow_query.py"
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: workflow-query <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  recent-failures [n]     Show recent failures (default: 10)"
+    echo "  recent-files [n]        Show recently changed files (default: 20)"
+    echo "  high-failure-files [n]  Show files with frequent failures (default: 3)"
+    echo "  session-restore [id]    Get session restore data"
+    echo "  task-status             Show all task statuses"
+    echo "  violations              Show workflow violations"
+    echo "  patch-lineage <id>      Show patch lineage"
+    echo "  rollback-suggest <id>   Suggest rollback for attempt"
+    echo "  stats                   Show database statistics"
+    exit 1
+fi
+
+python3 "$PYTHON_SCRIPT" "$@"
