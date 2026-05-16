@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Skill routing rules based on task content
+TASK="${1:-}"
+TASK_LOWER=$(echo "$TASK" | tr '[:upper:]' '[:lower:]')
+
+# Function to suggest skill
+suggest_skill() {
+    local skill="$1"
+    local reason="$2"
+    echo "Suggested skill: /$skill"
+    echo "Reason: $reason"
+}
+
+# Route based on keywords
+if [[ -z "$TASK" ]]; then
+    echo "Usage: skill-router \"<task description>\""
+    echo ""
+    echo "Routes to appropriate mattpocock skill based on task content."
+    exit 1
+fi
+
+# Diagnostic tasks
+if echo "$TASK_LOWER" | grep -qE "(bug|error|crash|failure|broken|not work|crash|exception|debug|fix)"; then
+    suggest_skill "diagnose" "Task involves debugging or fixing an issue"
+    exit 0
+fi
+
+# Test tasks
+if echo "$TASK_LOWER" | grep -qE "(test|pytest|unit test|regression|spec|coverage|tdd)"; then
+    suggest_skill "tdd" "Task involves writing or running tests"
+    exit 0
+fi
+
+# Clarification tasks
+if echo "$TASK_LOWER" | grep -qE "(unclear|ambiguous|confusing|uncertain|clarify)"; then
+    suggest_skill "grill-with-docs" "Task requirements need clarification"
+    exit 0
+fi
+
+# Handoff tasks
+if echo "$TASK_LOWER" | grep -qE "(handoff|handover|context|summary|catch up|resume)"; then
+    suggest_skill "handoff" "Task involves session handoff or context transfer"
+    exit 0
+fi
+
+# Code quality tasks (must check before architecture)
+if echo "$TASK_LOWER" | grep -qE "(refactor|messy|technical debt|clean up|improve|chaotic|disorganized|重构)"; then
+    suggest_skill "improve-codebase-architecture" "Task involves improving code structure"
+    exit 0
+fi
+
+# Architecture tasks
+if echo "$TASK_LOWER" | grep -qE "(architecture|structure|understand project|codebase|how does|modules)"; then
+    suggest_skill "zoom-out" "Task requires understanding project architecture"
+    exit 0
+fi
+
+# PRD tasks
+if echo "$TASK_LOWER" | grep -qE "(prd|product|requirement|feature|functionality)"; then
+    suggest_skill "to-prd" "Task involves product requirements"
+    exit 0
+fi
+
+# Issue breakdown tasks
+if echo "$TASK_LOWER" | grep -qE "(issue|milestone|breakdown|roadmap|plan)"; then
+    suggest_skill "to-issues" "Task involves breaking down into issues/tasks"
+    exit 0
+fi
+
+# Git tasks
+if echo "$TASK_LOWER" | grep -qE "(git push|reset|clean|rebase|cherry|commit|amend|history)"; then
+    suggest_skill "git-guardrails-claude-code" "Task involves git operations"
+    exit 0
+fi
+
+# Default - no specific skill
+echo "No specific skill suggested for this task."
+echo ""
+echo "The task appears to be straightforward implementation work."
+echo "For this type of task, use standard claude-plan workflow:"
+echo "  1. Create .project-ai/TASK.md"
+echo "  2. Run local-coder .project-ai/TASK.md"
+echo "  3. Review RESULT.md and PATCH.diff"
+echo ""
+echo "Available skills (use /skill-name in Claude):"
+echo "  /diagnose - Debug issues"
+echo "  /tdd - Test-driven development"
+echo "  /handoff - Session handoff"
+echo "  /zoom-out - Understand architecture"
+echo "  /grill-with-docs - Clarify requirements"
+echo "  /to-prd - Product requirements"
+echo "  /to-issues - Break down to issues"
+echo "  /improve-codebase-architecture - Improve structure"
+echo "  /git-guardrails-claude-code - Git operations"

@@ -174,3 +174,28 @@ For issues:
 1. Run `bootstrap-verify --doctor`
 2. Check verification report
 3. Review GitHub issues
+
+## Step 9.5: Install Skills (Optional)
+
+For specialized task guidance:
+
+```bash
+# Install whitelisted mattpocock skills
+bootstrap-install-skills
+
+# Verify installation
+ls ~/.claude/skills/
+
+# Available skills
+echo "diagnose, tdd, handoff, zoom-out, grill-with-docs, to-prd, to-issues, improve-codebase-architecture, git-guardrails-claude-code"
+```
+
+### Using Skills
+
+```bash
+# Auto-route task to skill
+skill-router "fix the login bug"
+
+# Use skill in Claude
+Claude> /diagnose "error in authentication"
+```

@@ -177,3 +177,85 @@ This project participated in a production pilot to validate the claude-plan work
 - Direct execution mode works reliably for simple tasks
 - Documentation changes are safe and predictable
 - Version tracking in markdown files improves maintainability
+
+## Skills Integration
+
+This bootstrap includes whitelisted skills from [mattpocock/skills](https://github.com/mattpocock/skills) for specialized task guidance.
+
+### Installing Skills
+
+```bash
+# Install whitelisted skills after bootstrap installation
+bootstrap-install-skills
+
+# Update skills from upstream
+bootstrap-update-skills
+
+# Dry-run to see what would be installed
+bootstrap-install-skills --dry-run
+```
+
+### Whitelisted Skills
+
+The following skills are approved for installation:
+
+| Skill | Purpose |
+|-------|---------|
+| diagnose | Debug and troubleshoot issues |
+| tdd | Test-driven development guidance |
+| handoff | Session handoff and context compression |
+| zoom-out | Understand codebase architecture |
+| grill-with-docs | Clarify ambiguous requirements |
+| to-prd | Convert requirements to PRD format |
+| to-issues | Break down tasks into issues |
+| improve-codebase-architecture | Code quality improvements |
+| git-guardrails-claude-code | Git operation guidance |
+
+### Excluded Skills
+
+The following skills are intentionally excluded:
+
+- **prototype** - Not aligned with workflow-first approach
+- **triage** - Covered by diagnose skill
+- **caveman** - Not compatible with structured workflow
+- **write-a-skill** - Out of scope for bootstrap
+- **migrate-to-shoehorn** - Deprecated framework
+- **scaffold-exercises** - Educational, not production
+- **setup-pre-commit** - Can be added manually if needed
+- All skills in: deprecated, in-progress, personal
+
+### Skill Auto-Routing
+
+Use the skill-router to automatically select the appropriate skill:
+
+```bash
+skill-router "fix the login crash"
+# Suggests: /diagnose
+
+skill-router "add unit tests for auth module"
+# Suggests: /tdd
+
+skill-router "clean up the messy codebase"
+# Suggests: /improve-codebase-architecture
+```
+
+### Using Skills with Claude
+
+In Claude Code, invoke skills directly:
+
+```
+User: /diagnose "The crawler is failing with timeout error"
+
+Claude: [Analyzes codebase, identifies timeout issue, suggests fix via local-coder]
+```
+
+### Skill Workflow Integration
+
+Skills integrate with claude-plan workflow:
+
+1. **Planning Phase** - Skills help analyze and plan
+2. **Implementation Phase** - local-coder executes the changes
+3. **Review Phase** - Reviewer worker validates changes
+4. **Testing Phase** - Tester worker runs tests
+
+Skills never bypass the local-coder pipeline.

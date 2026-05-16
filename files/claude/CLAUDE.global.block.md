@@ -101,3 +101,66 @@ These rules apply to all Claude Code sessions across all projects.
 4. **Question Clarity**: Ask specific, well-formed questions when clarification is needed
 
 <!-- LEO_GLOBAL_WORKFLOW_END -->
+
+
+## Skills Integration (mattpocock/skills)
+
+This workflow includes whitelisted skills from mattpocock/skills for specialized guidance.
+
+### Whitelisted Skills
+
+- **diagnose** - Debug and troubleshoot issues
+- **tdd** - Test-driven development guidance
+- **handoff** - Session handoff and context compression
+- **zoom-out** - Understand codebase architecture
+- **grill-with-docs** - Clarify ambiguous requirements
+- **to-prd** - Convert requirements to PRD format
+- **to-issues** - Break down tasks into issues
+- **improve-codebase-architecture** - Code quality improvements
+- **git-guardrails-claude-code** - Git operation guidance
+
+### Skill Routing Rules
+
+Claude should automatically select appropriate skills based on task content:
+
+- Bug/error/crash → `/diagnose`
+- Test/pytest → `/tdd`
+- Unclear/ambiguous → `/grill-with-docs`
+- Handoff/handover → `/handoff`
+- Architecture/structure → `/zoom-out`
+- PRD/requirements → `/to-prd`
+- Issue breakdown → `/to-issues`
+- Code quality/refactor → `/improve-codebase-architecture`
+- Git operations → `/git-guardrails-claude-code`
+
+### Skill Constraints
+
+1. **Skills are for guidance only** - They help with planning, diagnosis, and documentation
+2. **Implementation must use local-coder** - Skills cannot bypass the implementation pipeline
+3. **Pipeline must be respected** - All code changes go through: implementation → review → test
+4. **Conflict resolution** - If skill suggests something that conflicts with claude-plan workflow, claude-plan workflow takes precedence
+5. **No skill auto-execution** - Skills provide recommendations; Claude executes via local-coder
+
+### Using Skills
+
+To invoke a skill:
+```
+Use /skill-name in conversation with Claude
+Example: /diagnose "The login module is failing"
+```
+
+To auto-route a task:
+```bash
+skill-router "fix the login bug"
+```
+
+### Installing Skills
+
+After bootstrap installation:
+```bash
+# Install whitelisted skills
+bootstrap-install-skills
+
+# Update skills
+bootstrap-update-skills
+```

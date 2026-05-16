@@ -22,3 +22,6 @@ node_modules/
 # Additional OS files
 .DS_Store
 Thumbs.db
+
+# Skills third-party
+third_party/mattpocock-skills/

@@ -170,6 +170,44 @@ def check_workflow_components():
     return all(results)
 
 
+def check_skill_tools():
+    """Check skill tool installation."""
+    results = []
+
+    bin_dir = Path.home() / "bin"
+
+    tools = [
+        ("bootstrap-install-skills", "Skill installer"),
+        ("bootstrap-update-skills", "Skill updater"),
+        ("skill-router", "Skill auto-router"),
+    ]
+
+    for filename, desc in tools:
+        path = bin_dir / filename
+        if path.exists():
+            print_pass(f"{desc} ({filename})")
+            results.append(True)
+        else:
+            print_warn(f"{desc} ({filename}) not found (optional)")
+            results.append(True)  # Optional
+
+    # Check if skills are installed
+    skills_dir = Path.home() / ".claude" / "skills"
+    if skills_dir.exists():
+        skill_count = len([d for d in skills_dir.iterdir() if d.is_dir()])
+        print(f"Skills installed: {skill_count}")
+        if skill_count > 0:
+            print_pass("mattpocock skills installed")
+        else:
+            print_warn("No skills installed (run bootstrap-install-skills)")
+        results.append(True)
+    else:
+        print_warn("Skills directory not found (optional)")
+        results.append(True)
+
+    return all(results)
+
+
 def check_python():
     """Check Python installation."""
     results = []
@@ -501,6 +539,7 @@ def main():
     results["claude-plan"] = check_claude_plan()
     results["local-coder"] = check_local_coder()
     results["Workflow Components"] = check_workflow_components()
+    results["Skill Tools (optional)"] = check_skill_tools()
 
     print_header("Integration Test")
     results["Integration Test"] = run_integration_test()

@@ -89,3 +89,29 @@ cat <<'EOF'
 
 ═════════════════════════════════════════════════════════════
 EOF
+
+# Install skill tools (always installed, skills optional)
+echo "==> Installing skill tools..."
+install -m 755 "$REPO_DIR/files/bin/bootstrap-install-skills" "$HOME/bin/"
+install -m 755 "$REPO_DIR/files/bin/bootstrap-update-skills" "$HOME/bin/"
+install -m 755 "$REPO_DIR/files/bin/skill-router" "$HOME/bin/"
+
+# Check if --with-skills flag
+if [[ "${1:-}" == "--with-skills" ]]; then
+    echo ""
+    echo "==> Installing whitelisted mattpocock skills..."
+    "$HOME/bin/bootstrap-install-skills"
+    
+    echo ""
+    echo "Skills installed! Use them with:"
+    echo "  skill-router \"<task>\""
+    echo ""
+else
+    echo ""
+    echo "To install whitelisted mattpocock skills, run:"
+    echo "  bootstrap-install-skills"
+    echo ""
+    echo "For auto-routing:"
+    echo "  skill-router \"<task description>\""
+    echo ""
+fi

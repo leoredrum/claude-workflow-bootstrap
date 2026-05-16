@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+SKILLS_SOURCE="$PROJECT_ROOT/third_party/mattpocock-skills/skills"
+SKILLS_DEST="$HOME/.claude/skills"
+
+# Whitelist of allowed skills
+WHITELIST=(
+    "setup-matt-pocock-skills"
+    "diagnose"
+    "tdd"
+    "handoff"
+    "zoom-out"
+    "grill-with-docs"
+    "to-prd"
+    "to-issues"
+    "improve-codebase-architecture"
+    "git-guardrails-claude-code"
+)
+
+# Blacklist (never install)
+BLACKLIST=(
+    "prototype"
+    "triage"
+    "caveman"
+    "write-a-skill"
+    "migrate-to-shoehorn"
+    "scaffold-exercises"
+    "setup-pre-commit"
+)
+
+DRY_RUN=${DRY_RUN:-0}
+FORCE=${FORCE:-0}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        --force)
+            FORCE=1
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: bootstrap-install-skills [--dry-run] [--force]"
+            exit 1
+            ;;
+    esac
+done
+
+# Check source directory
+if [[ ! -d "$SKILLS_SOURCE" ]]; then
+    echo "Error: Skills source not found at $SKILLS_SOURCE"
+    echo "Please run: git submodule update --init third_party/mattpocock-skills"
+    exit 1
+fi
+
+# Create destination directory
+mkdir -p "$SKILLS_DEST"
+
+# Function to check if skill is whitelisted
+is_whitelisted() {
+    local skill="$1"
+    for allowed in "${WHITELIST[@]}"; do
+        if [[ "$skill" == "$allowed" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Function to check if skill is blacklisted
+is_blacklisted() {
+    local skill="$1"
+    for forbidden in "${BLACKLIST[@]}"; do
+        if [[ "$skill" == "$forbidden" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Function to get skill hash
+get_skill_hash() {
+    local skill_dir="$1"
+    if [[ -d "$skill_dir" ]]; then
+        find "$skill_dir" -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "unknown"
+    else
+        echo "unknown"
+    fi
+}
+
+# Counters
+INSTALLED=0
+SKIPPED=0
+UPDATED=0
+BLACKLISTED=0
+
+echo "Installing skills from mattpocock/skills..."
+echo "Source: $SKILLS_SOURCE"
+echo "Destination: $SKILLS_DEST"
+echo ""
+
+# Find all skills with SKILL.md
+for skill_md in $(find "$SKILLS_SOURCE" -name "SKILL.md"); do
+    skill_dir=$(dirname "$skill_md")
+    skill_name=$(basename "$skill_dir")
+    
+    # Skip category directories
+    if [[ "$skill_name" == "engineering" || "$skill_name" == "productivity" || "$skill_name" == "misc" || "$skill_name" == "personal" || "$skill_name" == "deprecated" || "$skill_name" == "in-progress" ]]; then
+        continue
+    fi
+    
+    # Check blacklist
+    if is_blacklisted "$skill_name"; then
+        echo "⚠ SKIPPED (blacklisted): $skill_name"
+        ((BLACKLISTED++))
+        continue
+    fi
+    
+    # Check whitelist
+    if ! is_whitelisted "$skill_name"; then
+        echo "⊘ SKIPPED (not whitelisted): $skill_name"
+        ((SKIPPED++))
+        continue
+    fi
+    
+    # Get source hash
+    source_hash=$(get_skill_hash "$skill_dir")
+    
+    # Check if skill already exists
+    dest_dir="$SKILLS_DEST/$skill_name"
+    
+    if [[ -d "$dest_dir" ]]; then
+        dest_hash=$(get_skill_hash "$dest_dir")
+        
+        if [[ "$source_hash" == "$dest_hash" ]]; then
+            echo "✓ CURRENT: $skill_name"
+            ((INSTALLED++))
+            continue
+        fi
+        
+        if [[ $FORCE -eq 0 ]]; then
+            echo "? EXISTS (different): $skill_name"
+            echo "  Use --force to update"
+            ((SKIPPED++))
+            continue
+        fi
+        
+        echo "↑ UPDATING: $skill_name"
+        ((UPDATED++))
+    else
+        echo "+ INSTALLING: $skill_name"
+        ((INSTALLED++))
+    fi
+    
+    # Copy skill (dry run check)
+    if [[ $DRY_RUN -eq 1 ]]; then
+        echo "  [DRY-RUN] Would copy to $dest_dir"
+        continue
+    fi
+    
+    # Remove existing and copy new
+    rm -rf "$dest_dir"
+    cp -r "$skill_dir" "$dest_dir"
+done
+
+echo ""
+echo "=== Summary ==="
+echo "Installed: $INSTALLED"
+echo "Updated: $UPDATED"
+echo "Skipped: $SKIPPED"
+echo "Blacklisted: $BLACKLISTED"
+echo ""
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY-RUN complete. No files were modified."
+    echo "Run without --dry-run to actually install skills."
+else
+    echo "Skills installed successfully!"
+    echo ""
+    echo "Installed skills:"
+    for skill in "${WHITELIST[@]}"; do
+        if [[ -d "$SKILLS_DEST/$skill" ]]; then
+            echo "  ✓ $skill"
+        fi
+    done
+fi
