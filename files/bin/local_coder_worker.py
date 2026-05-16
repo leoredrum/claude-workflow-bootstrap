@@ -113,24 +113,67 @@ def read_context_files(project_ai_dir: Path) -> dict:
     return context
 
 
-def build_prompt(context: dict) -> str:
-    """Build the prompt for Ollama."""
+def build_prompt(context: dict, allowed_files: list = None, forbidden_new: bool = False) -> str:
+    """Build the prompt for Ollama with edit-mode instructions."""
     task = context.get("TASK.md", "")
+
+    # Build constraint-specific instructions
+    constraint_instructions = ""
+    if allowed_files:
+        allowed_list = "\n".join(f"  - {f}" for f in allowed_files)
+        constraint_instructions = f"""
+
+## Target File Constraints
+
+You are ONLY allowed to modify these files:
+{allowed_list}
+
+**CRITICAL EDITING RULES:**
+1. For EXISTING files in allowed_files, you MUST use edit commands:
+   - replace_text: Replace exact text match
+   - insert_after: Insert text after an anchor line
+   - insert_before: Insert text before an anchor line
+
+2. Do NOT use write_file for existing allowed files - it will be BLOCKED
+
+3. write_file is ONLY for:
+   - Creating new files (if forbidden_new_files allows)
+   - Files NOT in allowed_files list
+
+4. Edit command formats:
+   - replace_text: {{"type": "replace_text", "path": "path/to/file", "old": "exact old text", "new": "replacement"}}
+   - insert_after: {{"type": "insert_after", "path": "path/to/file", "anchor": "exact anchor line", "content": "text to insert"}}
+   - insert_before: {{"type": "insert_before", "path": "path/to/file", "anchor": "exact anchor line", "content": "text to insert"}}
+"""
+
+    if forbidden_new:
+        constraint_instructions += f"""
+
+## New File Restrictions
+
+forbidden_new_files: true - You CANNOT create new files.
+Use edit commands on existing allowed files only.
+"""
 
     return f"""You are a local AI coding assistant. Your task is to implement the requested changes based on the task description.
 
 ## Task
 {task}
-
+{constraint_instructions}
 IMPORTANT: Respond ONLY with a valid JSON object in this exact format:
 {{
   "summary": "Brief description of what was done",
   "commands": [
-    {{"type": "write_file", "path": "relative/path/to/file", "content": "file content"}}
+    {{"type": "replace_text", "path": "relative/path/to/file", "old": "exact old text to find", "new": "replacement text"}},
+    {{"type": "insert_after", "path": "relative/path/to/file", "anchor": "exact anchor line", "content": "text to insert"}},
+    {{"type": "insert_before", "path": "relative/path/to/file", "anchor": "exact anchor line", "content": "text to insert"}}
   ],
   "tests": ["test suggestion 1"],
   "risks": ["potential risk 1"]
 }}
+
+For NEW files only (if allowed):
+  {{"type": "write_file", "path": "relative/path/to/file", "content": "file content"}}
 """
 
 
@@ -272,24 +315,34 @@ def extract_task_constraints(task_content: str) -> dict:
         "allowed_files": [],
         "forbidden_new_files": False
     }
-    
+
     lines = task_content.splitlines()
-    
+    in_allowed_files_section = False
+
     for line in lines:
-        line = line.strip()
-        
-        # Parse YAML-style allowed_files
-        if line.startswith("allowed_files:"):
+        stripped = line.strip()
+
+        # Check if we're entering allowed_files section
+        if stripped.startswith("allowed_files:"):
+            in_allowed_files_section = True
             continue
-        if line.startswith("- ") or line.startswith("  -"):
-            file_path = line.split("-", 1)[1].strip()
-            if file_path and file_path not in constraints["allowed_files"]:
-                constraints["allowed_files"].append(file_path)
-        
-        # Parse forbidden_new_files
-        if "forbidden_new_files:" in line and "true" in line.lower():
+
+        # Check if we're leaving the section (next heading or non-list item)
+        if in_allowed_files_section:
+            if stripped.startswith("- ") or stripped.startswith("  -"):
+                file_path = stripped.split("-", 1)[1].strip()
+                # Filter out non-file paths (should contain / or . extension)
+                if file_path and ('/' in file_path or '.' in file_path):
+                    if file_path not in constraints["allowed_files"]:
+                        constraints["allowed_files"].append(file_path)
+            elif stripped and not stripped.startswith("#"):
+                # Non-empty, non-comment line ends the section
+                in_allowed_files_section = False
+
+        # Parse forbidden_new_files (can be anywhere)
+        if "forbidden_new_files:" in stripped and "true" in stripped.lower():
             constraints["forbidden_new_files"] = True
-    
+
     return constraints
 
 
@@ -412,8 +465,85 @@ def is_safe_path(path: Path, project_root: Path) -> bool:
     return True
 
 
+def apply_replace_text(path: Path, old: str, new: str) -> tuple:
+    """Apply replace_text command with strict validation.
+
+    Returns: (success, error_reason)
+    - success: True if replacement worked
+    - error_reason: "anchor_not_found", "ambiguous_anchor", or None
+    """
+    if not path.exists():
+        return False, "file_not_found"
+
+    file_content = path.read_text()
+
+    # Check if old text exists
+    if old not in file_content:
+        return False, "old_text_not_found"
+
+    # Check for ambiguous match (multiple occurrences)
+    count = file_content.count(old)
+    if count > 1:
+        return False, f"ambiguous_anchor ({count} occurrences)"
+
+    # Perform replacement
+    new_content = file_content.replace(old, new, 1)
+    path.write_text(new_content)
+    return True, None
+
+
+def apply_insert_after(path: Path, anchor: str, content: str) -> tuple:
+    """Apply insert_after command with strict validation.
+
+    Returns: (success, error_reason)
+    """
+    if not path.exists():
+        return False, "file_not_found"
+
+    file_content = path.read_text()
+
+    # Check if anchor exists
+    if anchor not in file_content:
+        return False, "anchor_not_found"
+
+    # Check for ambiguous match
+    count = file_content.count(anchor)
+    if count > 1:
+        return False, f"ambiguous_anchor ({count} occurrences)"
+
+    # Perform insertion
+    new_content = file_content.replace(anchor, anchor + "\n" + content, 1)
+    path.write_text(new_content)
+    return True, None
+
+
+def apply_insert_before(path: Path, anchor: str, content: str) -> tuple:
+    """Apply insert_before command with strict validation.
+
+    Returns: (success, error_reason)
+    """
+    if not path.exists():
+        return False, "file_not_found"
+
+    file_content = path.read_text()
+
+    # Check if anchor exists
+    if anchor not in file_content:
+        return False, "anchor_not_found"
+
+    # Check for ambiguous match
+    count = file_content.count(anchor)
+    if count > 1:
+        return False, f"ambiguous_anchor ({count} occurrences)"
+
+    # Perform insertion
+    new_content = file_content.replace(anchor, content + "\n" + anchor, 1)
+    path.write_text(new_content)
+    return True, None
+
+
 def apply_commands(commands: list, project_root: Path, project_ai_dir: Path) -> tuple:
-    """Apply write/append commands with safety checks."""
+    """Apply write/append/edit commands with safety checks."""
     applied = []
     files_touched = []
 
@@ -441,33 +571,55 @@ def apply_commands(commands: list, project_root: Path, project_ai_dir: Path) -> 
         path = project_root / path_str
         files_touched.append(path_str)
 
-        # Handle new command types
-        if cmd_type == "insert_after":
-            marker = cmd.get("marker", "")
-            if path.exists() and marker:
-                try:
-                    file_content = path.read_text()
-                    if marker in file_content:
-                        new_content = file_content.replace(marker, marker + "\n" + content)
-                        path.write_text(new_content)
-                        applied.append(str(path.relative_to(project_root)))
-                    else:
-                        print(f"WARNING: Marker not found in {path_str}", file=sys.stderr)
-                except Exception as e:
-                    print(f"WARNING: insert_after failed: {e}", file=sys.stderr)
+        # Handle edit commands (NEW - strict validation)
+        if cmd_type == "replace_text":
+            old_text = cmd.get("old", "")
+            new_text = cmd.get("new", "")
+            if not old_text:
+                error_msg = f"replace_text missing 'old' parameter for {path_str}"
+                record_attempt(project_ai_dir, error_msg, files_touched, "BLOCKED")
+                raise ValueError(f"BLOCKED - {error_msg}")
+
+            success, error = apply_replace_text(path, old_text, new_text)
+            if success:
+                applied.append(str(path.relative_to(project_root)))
+            else:
+                error_msg = f"replace_text failed for {path_str}: {error}"
+                record_attempt(project_ai_dir, error_msg, files_touched, "BLOCKED")
+                raise ValueError(f"BLOCKED - {error_msg}")
+
+        elif cmd_type == "insert_after":
+            # Support both 'anchor' (new) and 'marker' (old) for compatibility
+            anchor = cmd.get("anchor", cmd.get("marker", ""))
+            if not anchor:
+                error_msg = f"insert_after missing 'anchor' for {path_str}"
+                record_attempt(project_ai_dir, error_msg, files_touched, "BLOCKED")
+                raise ValueError(f"BLOCKED - {error_msg}")
+
+            success, error = apply_insert_after(path, anchor, content)
+            if success:
+                applied.append(str(path.relative_to(project_root)))
+            else:
+                error_msg = f"insert_after failed for {path_str}: {error}"
+                record_attempt(project_ai_dir, error_msg, files_touched, "BLOCKED")
+                raise ValueError(f"BLOCKED - {error_msg}")
+
         elif cmd_type == "insert_before":
-            marker = cmd.get("marker", "")
-            if path.exists() and marker:
-                try:
-                    file_content = path.read_text()
-                    if marker in file_content:
-                        new_content = file_content.replace(marker, content + "\n" + marker)
-                        path.write_text(new_content)
-                        applied.append(str(path.relative_to(project_root)))
-                    else:
-                        print(f"WARNING: Marker not found in {path_str}", file=sys.stderr)
-                except Exception as e:
-                    print(f"WARNING: insert_before failed: {e}", file=sys.stderr)
+            # Support both 'anchor' (new) and 'marker' (old) for compatibility
+            anchor = cmd.get("anchor", cmd.get("marker", ""))
+            if not anchor:
+                error_msg = f"insert_before missing 'anchor' for {path_str}"
+                record_attempt(project_ai_dir, error_msg, files_touched, "BLOCKED")
+                raise ValueError(f"BLOCKED - {error_msg}")
+
+            success, error = apply_insert_before(path, anchor, content)
+            if success:
+                applied.append(str(path.relative_to(project_root)))
+            else:
+                error_msg = f"insert_before failed for {path_str}: {error}"
+                record_attempt(project_ai_dir, error_msg, files_touched, "BLOCKED")
+                raise ValueError(f"BLOCKED - {error_msg}")
+
         elif cmd_type == "replace_block":
             start_marker = cmd.get("start_marker", "")
             end_marker = cmd.get("end_marker", "")
@@ -484,6 +636,7 @@ def apply_commands(commands: list, project_root: Path, project_ai_dir: Path) -> 
                         print(f"WARNING: Block markers not found in {path_str}", file=sys.stderr)
                 except Exception as e:
                     print(f"WARNING: replace_block failed: {e}", file=sys.stderr)
+
         elif cmd_type == "write_file" or cmd_type == "write_file_safe":
             # Original write_file logic
             if not is_safe_path(path, project_root):
@@ -679,8 +832,13 @@ def main():
         task_id = db.create_task(summary=task_content[:200], full_content=task_content)
         attempt_id = db.start_attempt(task_id, executor="local-coder", backend="ollama", model=args.model)
 
+        # Parse constraints for edit-mode prompt
+        constraints = extract_task_constraints(task_content)
+        allowed_files = constraints.get("allowed_files", [])
+        forbidden_new = constraints.get("forbidden_new_files", False)
+
         context = read_context_files(project_ai_dir)
-        prompt = build_prompt(context)
+        prompt = build_prompt(context, allowed_files=allowed_files if allowed_files else None, forbidden_new=forbidden_new)
 
         try:
             raw_output = call_ollama(prompt, args.model, args.endpoint)

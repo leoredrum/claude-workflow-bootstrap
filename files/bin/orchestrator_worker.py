@@ -120,13 +120,19 @@ class ImplementerWorker(Worker):
 
     def execute_task(self, task: dict) -> dict:
         """Execute implementation task using local-coder."""
-        # Write task to .project-ai/TASK.md
+        # Ensure TASK.md exists (ONLY create if missing, NEVER overwrite)
         task_file = self.project_root / ".project-ai" / "TASK.md"
-        task_file.write_text(task.get("full_content") or task.get("summary", ""))
+        if not task_file.exists():
+            # Create TASK.md from task only if it doesn't exist
+            full_content = task.get("full_content") or task.get("summary", "")
+            task_file.parent.mkdir(parents=True, exist_ok=True)
+            task_file.write_text(full_content)
+        # If TASK.md exists, leave it untouched - local-coder will read it directly
 
-        # Run local-coder
+        # Run local-coder (call Python worker directly for edit-mode support)
+        worker_script = Path(__file__).parent / "local_coder_worker.py"
         result = subprocess.run(
-            ["local-coder", str(task_file)],
+            ["python3", str(worker_script), "--task-file", str(task_file), "--project-root", str(self.project_root)],
             cwd=self.project_root,
             capture_output=True,
             text=True,
