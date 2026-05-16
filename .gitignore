@@ -9,3 +9,16 @@ secrets.yaml
 .DS_Store
 __pycache__/
 *.pyc
+
+# Additional security exclusions
+*token*
+*secret*
+secrets/
+private/
+
+# Node.js
+node_modules/
+
+# Additional OS files
+.DS_Store
+Thumbs.db

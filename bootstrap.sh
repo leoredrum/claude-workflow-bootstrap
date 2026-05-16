@@ -61,6 +61,12 @@ if [[ ! -e /usr/local/bin/ai-project-init ]]; then
     fi
 fi
 
+# 3.5 local-coder (optional, requires ollama)
+if [[ ! -e "$HOME/AI/local-coder" ]]; then
+    echo "→ local-coder not installed (requires ollama)"
+    echo "  To install: git clone https://github.com/leoredrum/local-coder.git ~/AI/local-coder"
+fi
+
 # 4. claude-haha 桥接 (如装了)
 if [[ -d "$HOME/.claude-haha" ]]; then
     if [[ ! -e "$HOME/.claude-haha/ai-project-templates" ]]; then

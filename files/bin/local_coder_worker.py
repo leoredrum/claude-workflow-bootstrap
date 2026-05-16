@@ -2,14 +2,101 @@
 """local-coder worker: reads task, calls Ollama, applies changes."""
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 import requests
+
+# Hard guardrails - configurable via env
+MAX_FILES_PER_RUN = int(os.getenv("LOCAL_CODER_MAX_FILES", "5"))
+MAX_FILE_LINES = int(os.getenv("LOCAL_CODER_MAX_LINES", "3000"))
+MAX_PATCH_LINES = int(os.getenv("LOCAL_CODER_MAX_PATCH_LINES", "500"))
+DRY_RUN = os.getenv("LOCAL_CODER_DRY_RUN", "0") == "1"
+
+
+def check_file_size(path: Path, max_lines: int) -> bool:
+    """Check if file has too many lines."""
+    if path.exists():
+        line_count = len(path.read_text().splitlines())
+        return line_count <= max_lines
+    return True  # New file is OK
+
+
+def count_patch_lines(patch_content: str) -> int:
+    """Count lines in patch."""
+    return len([l for l in patch_content.splitlines() if l.startswith('+') or l.startswith('-')])
+
+
+def record_attempt(project_ai_dir: Path, task_summary: str, files_touched: list, result: str) -> str:
+    """Record attempt in history."""
+    history_file = project_ai_dir / "ATTEMPT_HISTORY.md"
+
+    task_hash = hashlib.md5(task_summary.encode()).hexdigest()[:8]
+
+    entry = f"""
+## Attempt - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+- Task Hash: {task_hash}
+- Files: {', '.join(files_touched) if files_touched else 'None'}
+- Result: {result}
+"""
+
+    if history_file.exists():
+        content = history_file.read_text()
+        history_file.write_text(entry + content)
+    else:
+        history_file.write_text("# Attempt History\n\n" + entry)
+
+    return task_hash
+
+
+def check_loop_detection(project_ai_dir: Path, task_hash: str) -> bool:
+    """Check if same task was attempted 3+ times."""
+    history_file = project_ai_dir / "ATTEMPT_HISTORY.md"
+    if not history_file.exists():
+        return False
+
+    content = history_file.read_text()
+    count = content.count(f"Task Hash: {task_hash}")
+    return count >= 3
+
+
+def detect_violation(project_ai_dir: Path) -> bool:
+    """Check for workflow violations."""
+    result_file = project_ai_dir / "RESULT.md"
+    if not result_file.exists():
+        return True  # Missing RESULT.md is a violation
+
+    content = result_file.read_text()
+    if "implementation_executor: local-coder" not in content:
+        return True
+    if "backend: ollama" not in content:
+        return True
+
+    return False
+
+
+def record_violation(project_ai_dir: Path, reason: str):
+    """Record workflow violation."""
+    violation_file = project_ai_dir / "WORKFLOW_VIOLATIONS.md"
+
+    entry = f"""
+## Violation - {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+- Reason: {reason}
+- Status: UNRESOLVED
+"""
+
+    if violation_file.exists():
+        content = violation_file.read_text()
+        violation_file.write_text(entry + content)
+    else:
+        violation_file.write_text("# Workflow Violations\n\n" + entry)
 
 
 def read_context_files(project_ai_dir: Path) -> dict:
@@ -103,9 +190,16 @@ def is_safe_path(path: Path, project_root: Path) -> bool:
     return True
 
 
-def apply_commands(commands: list, project_root: Path) -> list:
-    """Apply write/append commands."""
+def apply_commands(commands: list, project_root: Path, project_ai_dir: Path) -> tuple:
+    """Apply write/append commands with limits."""
     applied = []
+    files_touched = []
+
+    # Check file count limit
+    if len(commands) > MAX_FILES_PER_RUN:
+        record_attempt(project_ai_dir, f"Too many files: {len(commands)}", [], "BLOCKED")
+        raise ValueError(f"Exceeds MAX_FILES_PER_RUN ({MAX_FILES_PER_RUN}): {len(commands)} commands")
+
     for cmd in commands:
         cmd_type = cmd.get("type")
         path_str = cmd.get("path", "")
@@ -115,9 +209,22 @@ def apply_commands(commands: list, project_root: Path) -> list:
             continue
 
         path = project_root / path_str
+        files_touched.append(path_str)
 
         if not is_safe_path(path, project_root):
             print(f"WARNING: Skipping unsafe path: {path_str}", file=sys.stderr)
+            record_attempt(project_ai_dir, f"Unsafe path: {path_str}", files_touched, "PARTIAL")
+            continue
+
+        # Check file size
+        if not check_file_size(path, MAX_FILE_LINES):
+            print(f"WARNING: File too large (> {MAX_FILE_LINES} lines): {path_str}", file=sys.stderr)
+            record_attempt(project_ai_dir, f"File too large: {path_str}", files_touched, "PARTIAL")
+            raise ValueError(f"File exceeds MAX_FILE_LINES: {path_str}")
+
+        if DRY_RUN:
+            print(f"[DRY-RUN] Would {cmd_type}: {path_str}", file=sys.stderr)
+            applied.append(str(path.relative_to(project_root)))
             continue
 
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,7 +237,7 @@ def apply_commands(commands: list, project_root: Path) -> list:
                 f.write(content)
             applied.append(str(path.relative_to(project_root)))
 
-    return applied
+    return applied, len(commands)
 
 
 def generate_patch(project_root: Path, project_ai_dir: Path):
@@ -235,6 +342,16 @@ def main():
         print(f"ERROR: .project-ai directory not found at {project_ai_dir}", file=sys.stderr)
         sys.exit(1)
 
+    # Read task for loop detection
+    task_content = (project_ai_dir / "TASK.md").read_text()
+    task_hash = hashlib.md5(task_content.encode()).hexdigest()[:8]
+
+    # Check loop detection BEFORE running
+    if check_loop_detection(project_ai_dir, task_hash):
+        record_violation(project_ai_dir, f"Loop detected: task_hash {task_hash} attempted 3+ times")
+        print(f"ERROR: Loop detected - same task attempted 3+ times. See ATTEMPT_HISTORY.md and WORKFLOW_VIOLATIONS.md", file=sys.stderr)
+        sys.exit(1)
+
     context = read_context_files(project_ai_dir)
     prompt = build_prompt(context)
 
@@ -244,6 +361,7 @@ def main():
         (project_ai_dir / "RESULT.md").write_text(
             f"# Implementation Result\n\n**Status:** BLOCKED\n\n**Error:** Failed to call Ollama: {e}"
         )
+        record_attempt(project_ai_dir, f"Ollama error: {e}", [], "BLOCKED")
         sys.exit(1)
 
     (project_ai_dir / "local-coder-raw-output.txt").write_text(raw_output)
@@ -255,10 +373,19 @@ def main():
             f"# Implementation Result\n\n**Status:** FAILED\n\n**Error:** Failed to parse model output as JSON: {e}\n\n"
             f"Raw output saved to local-coder-raw-output.txt"
         )
+        record_attempt(project_ai_dir, f"Parse error: {e}", [], "FAILED")
         sys.exit(1)
 
     commands = response.get("commands", [])
-    files_changed = apply_commands(commands, project_root)
+    try:
+        files_changed, command_count = apply_commands(commands, project_root, project_ai_dir)
+    except ValueError as e:
+        # Guardrail violation
+        (project_ai_dir / "RESULT.md").write_text(
+            f"# Implementation Result\n\n**Status:** BLOCKED\n\n**Error:** Guardrail violation: {e}"
+        )
+        record_attempt(project_ai_dir, f"Guardrail: {e}", [], "BLOCKED")
+        sys.exit(1)
 
     generate_patch(project_root, project_ai_dir)
 
@@ -274,6 +401,9 @@ def main():
 
     write_result(project_ai_dir, summary, files_changed, tests, risks, status)
     update_handover(project_ai_dir, summary)
+
+    # Record successful attempt
+    record_attempt(project_ai_dir, summary, files_changed, status)
 
     print(f"local-coder complete: {status}", file=sys.stderr)
     print(f"Files changed: {len(files_changed)}", file=sys.stderr)
