@@ -46,13 +46,19 @@ def check_file_exists(path: Path | str) -> bool:
 
 def cmd_health(args) -> None:
     """Check system health."""
-    print("🔍 System Health Check")
-    print("=" * 50)
+    verbose = getattr(args, 'verbose', False)
+
+    if verbose:
+        print("System Health Check")
+        print("=" * 50)
+    else:
+        print("health", end="")
 
     issues = []
 
     # Check core binaries
-    print("\n📦 Core Binaries:")
+    if verbose:
+        print("\nCore Binaries:")
     binaries = [
         ("claude-plan", "Formal development mode"),
         ("local-coder", "Local AI executor"),
@@ -61,25 +67,25 @@ def cmd_health(args) -> None:
         ("bootstrap-verify", "Installation verification"),
     ]
 
+    missing_binaries = []
     for cmd, desc in binaries:
-        # Check both in PATH and files/bin
         in_path = check_command_exists(cmd)
         in_bin = check_file_exists(Path(__file__).parent / cmd)
-        status = "✓" if (in_path or in_bin) else "✗"
-        location = "PATH" if in_path else ("bin" if in_bin else "MISSING")
-        print(f"  {status} {cmd:20} ({desc}) [{location}]")
+        if verbose:
+            status = "OK" if (in_path or in_bin) else "MISSING"
+            location = "PATH" if in_path else ("bin" if in_bin else "MISSING")
+            print(f"  {status} {cmd:20} ({desc}) [{location}]")
         if not (in_path or in_bin):
             issues.append(f"{cmd} not found")
+            missing_binaries.append(cmd)
 
     # Check Ollama
-    print("\n🦙 Ollama Backend:")
     ollama_ok = check_command_exists("ollama")
-    print(f"  {'✓' if ollama_ok else '✗'} ollama command      {'Available' if ollama_ok else 'NOT FOUND'}")
     if not ollama_ok:
         issues.append("Ollama not installed")
 
+    has_model = False
     if ollama_ok:
-        # Check model availability
         try:
             result = subprocess.run(
                 ["ollama", "list"],
@@ -88,37 +94,36 @@ def cmd_health(args) -> None:
                 timeout=10
             )
             has_model = "qwen2.5-coder:32b" in result.stdout
-            print(f"  {'✓' if has_model else '✗'} qwen2.5-coder:32b   {'Available' if has_model else 'NOT FOUND'}")
             if not has_model:
                 issues.append("qwen2.5-coder:32b model not found")
-        except Exception as e:
-            print(f"  ✗ Model check failed: {e}")
+        except Exception:
             issues.append("Cannot check Ollama models")
 
+    if verbose:
+        print("\nOllama Backend:")
+        print(f"  {'OK' if ollama_ok else 'MISSING'} ollama")
+        if ollama_ok:
+            print(f"  {'OK' if has_model else 'MISSING'} qwen2.5-coder:32b")
+
     # Check recent violations
-    print("\n⚠️  Recent Violations:")
     project_root = find_project_root()
     project_ai = project_root / ".project-ai"
 
     violation_file = project_ai / "WORKFLOW_VIOLATIONS.md"
+    violation_count = 0
     if violation_file.exists():
         content = violation_file.read_text()
-        recent = content.count("## Violation")
-        if recent > 0:
-            print(f"  ⚠️  {recent} violation(s) recorded")
-            # Check recent violations (last 7 days)
-            recent_week = 0
-            for line in content.splitlines():
-                if "## Violation" in line:
-                    # Parse date (simplified)
-                    recent_week += 1
-            if recent_week > 0:
-                print(f"  ⚠️  Total violations: {recent_week}")
-    else:
-        print("  ✓ No violations recorded")
+        violation_count = content.count("## Violation")
+
+    if verbose:
+        print("\nRecent Violations:")
+        if violation_count > 0:
+            print(f"  {violation_count} violation(s) recorded")
+        else:
+            print("  OK No violations recorded")
 
     # Check stuck workers
-    print("\n👷 Worker Status:")
+    stuck_workers = 0
     try:
         db = get_db(project_root)
         cur = db.conn.execute("""
@@ -127,16 +132,17 @@ def cmd_health(args) -> None:
             GROUP BY worker_type, status
         """)
         workers = cur.fetchall()
-        if workers:
-            for wtype, status, count in workers:
-                print(f"  {wtype:15} {status:10} {count}")
-        else:
-            print("  ✓ No workers registered")
-    except Exception as e:
-        print(f"  ⚠️  Cannot check workers: {e}")
+        if verbose:
+            print("\nWorker Status:")
+            if workers:
+                for wtype, status, count in workers:
+                    print(f"  {wtype:15} {status:10} {count}")
+            else:
+                print("  OK No workers registered")
+    except Exception:
+        pass
 
     # Check context health
-    print("\n📊 Context Health:")
     WARN_HANDOFF_LINES = 300
     WARN_MEMORY_LINES = 500
     WARN_PATCH_LINES = 800
@@ -148,21 +154,18 @@ def cmd_health(args) -> None:
     if handoff_file.exists():
         lines = len(handoff_file.read_text().splitlines())
         if lines >= WARN_HANDOFF_LINES:
-            print(f"  ⚠️  HANDOFF.md: {lines} lines (>= {WARN_HANDOFF_LINES})")
             context_warnings += 1
 
     memory_file = project_ai / "MEMORY.md"
     if memory_file.exists():
         lines = len(memory_file.read_text().splitlines())
         if lines >= WARN_MEMORY_LINES:
-            print(f"  ⚠️  MEMORY.md: {lines} lines (>= {WARN_MEMORY_LINES})")
             context_warnings += 1
 
     patch_file = project_ai / "PATCH.diff"
     if patch_file.exists():
         lines = len(patch_file.read_text().splitlines())
         if lines >= WARN_PATCH_LINES:
-            print(f"  ⚠️  PATCH.diff: {lines} lines (>= {WARN_PATCH_LINES})")
             context_warnings += 1
 
     try:
@@ -173,29 +176,42 @@ def cmd_health(args) -> None:
         """)
         session_tasks = cur.fetchone()[0]
         if session_tasks >= WARN_SESSION_TASKS:
-            print(f"  ⚠️  Session tasks: {session_tasks} (>= {WARN_SESSION_TASKS})")
             context_warnings += 1
         db.close()
     except:
         pass
 
-    if context_warnings == 0:
-        print("  ✓ Context window healthy")
-    elif context_warnings == 1:
-        print(f"  ⚠️  {context_warnings} context warning")
-    else:
-        print(f"  ❌ {context_warnings} context warnings - consider: workflow-admin handoff")
+    if context_warnings >= 2:
         issues.append(f"Context window: {context_warnings} warnings")
 
+    if verbose:
+        print("\nContext Health:")
+        if context_warnings == 0:
+            print("  OK Context window healthy")
+        elif context_warnings == 1:
+            print(f"  WARN {context_warnings} context warning")
+        else:
+            print(f"  DANGER {context_warnings} context warnings")
+
     # Summary
-    print("\n" + "=" * 50)
-    if issues:
-        print(f"❌ Health Check FAILED - {len(issues)} issue(s):")
-        for issue in issues:
-            print(f"  - {issue}")
-        sys.exit(1)
+    if verbose:
+        print("\n" + "=" * 50)
+        if issues:
+            print(f"FAILED - {len(issues)} issue(s):")
+            for issue in issues:
+                print(f"  - {issue}")
+        else:
+            print("PASSED")
     else:
-        print("✅ Health Check PASSED")
+        # Terse output
+        if issues:
+            danger = "DANGER" if len(issues) >= 3 else ("WARN" if len(issues) >= 1 else "OK")
+            print(f" {danger} - {len(issues)} issue(s): " + ", ".join(issues))
+        else:
+            print(" OK")
+
+    if issues:
+        sys.exit(1)
 
 
 def cmd_metrics(args) -> None:
@@ -503,8 +519,7 @@ def cmd_clean(args) -> None:
 
 def cmd_context(args) -> None:
     """Check context window health with four-level danger rating."""
-    print("🔍 Context Window Check")
-    print("=" * 50)
+    verbose = getattr(args, 'verbose', False)
 
     project_root = find_project_root()
     project_ai = project_root / ".project-ai"
@@ -520,49 +535,59 @@ def cmd_context(args) -> None:
     metrics = {}
 
     # Check HANDOFF.md (30% weight)
-    print("\n📄 HANDOFF.md:")
+    if verbose:
+        print("\nHANDOFF.md:")
     handoff_file = project_ai / "HANDOFF.md"
     HANDOFF_MAX = 500  # Reference max for 100% pressure
     if handoff_file.exists():
         lines = len(handoff_file.read_text().splitlines())
         pressure = normalize_value(lines, HANDOFF_MAX)
         metrics['handoff'] = pressure
-        status = "✓" if pressure < 0.5 else ("⚠️" if pressure < 0.8 else "🔴")
-        print(f"  {status} {lines} lines (pressure: {pressure*100:.0f}%)")
+        if verbose:
+            status = "OK" if pressure < 0.5 else ("WARN" if pressure < 0.8 else "DANGER")
+            print(f"  {status} {lines} lines (pressure: {pressure*100:.0f}%)")
     else:
-        print("  ✓ File not found (OK)")
+        if verbose:
+            print("  OK File not found")
         metrics['handoff'] = 0.0
 
     # Check MEMORY.md (20% weight)
-    print("\n📄 MEMORY.md:")
+    if verbose:
+        print("\nMEMORY.md:")
     memory_file = project_ai / "MEMORY.md"
     MEMORY_MAX = 800  # Reference max
     if memory_file.exists():
         lines = len(memory_file.read_text().splitlines())
         pressure = normalize_value(lines, MEMORY_MAX)
         metrics['memory'] = pressure
-        status = "✓" if pressure < 0.5 else ("⚠️" if pressure < 0.8 else "🔴")
-        print(f"  {status} {lines} lines (pressure: {pressure*100:.0f}%)")
+        if verbose:
+            status = "OK" if pressure < 0.5 else ("WARN" if pressure < 0.8 else "DANGER")
+            print(f"  {status} {lines} lines (pressure: {pressure*100:.0f}%)")
     else:
-        print("  ✓ File not found (OK)")
+        if verbose:
+            print("  OK File not found")
         metrics['memory'] = 0.0
 
     # Check PATCH.diff (25% weight)
-    print("\n📄 PATCH.diff:")
+    if verbose:
+        print("\nPATCH.diff:")
     patch_file = project_ai / "PATCH.diff"
     PATCH_MAX = 1200  # Reference max
     if patch_file.exists():
         lines = len(patch_file.read_text().splitlines())
         pressure = normalize_value(lines, PATCH_MAX)
         metrics['patch'] = pressure
-        status = "✓" if pressure < 0.5 else ("⚠️" if pressure < 0.8 else "🔴")
-        print(f"  {status} {lines} lines (pressure: {pressure*100:.0f}%)")
+        if verbose:
+            status = "OK" if pressure < 0.5 else ("WARN" if pressure < 0.8 else "DANGER")
+            print(f"  {status} {lines} lines (pressure: {pressure*100:.0f}%)")
     else:
-        print("  ✓ File not found (OK)")
+        if verbose:
+            print("  OK File not found")
         metrics['patch'] = 0.0
 
     # Check session task count (15% weight)
-    print("\n🗄️  Session Tasks:")
+    if verbose:
+        print("\nSession Tasks:")
     SESSION_MAX = 10  # Reference max
     try:
         db = get_db(project_root)
@@ -573,15 +598,18 @@ def cmd_context(args) -> None:
         session_tasks = cur.fetchone()[0]
         pressure = normalize_value(session_tasks, SESSION_MAX)
         metrics['session'] = pressure
-        status = "✓" if pressure < 0.5 else ("⚠️" if pressure < 0.8 else "🔴")
-        print(f"  {status} {session_tasks} tasks (pressure: {pressure*100:.0f}%)")
+        if verbose:
+            status = "OK" if pressure < 0.5 else ("WARN" if pressure < 0.8 else "DANGER")
+            print(f"  {status} {session_tasks} tasks (pressure: {pressure*100:.0f}%)")
         db.close()
     except Exception as e:
-        print(f"  ⚠️  Cannot check: {e}")
+        if verbose:
+            print(f"  WARN Cannot check: {e}")
         metrics['session'] = 0.0
 
     # Check git diff size (10% weight)
-    print("\n📦 Git Diff Size:")
+    if verbose:
+        print("\nGit Diff Size:")
     GIT_DIFF_MAX = 400  # Reference max
     try:
         result2 = subprocess.run(
@@ -595,13 +623,16 @@ def cmd_context(args) -> None:
             actual_diff_lines = len([l for l in result2.stdout.splitlines() if l.startswith("+") or l.startswith("-")])
             pressure = normalize_value(actual_diff_lines, GIT_DIFF_MAX)
             metrics['git_diff'] = pressure
-            status = "✓" if pressure < 0.5 else ("⚠️" if pressure < 0.8 else "🔴")
-            print(f"  {status} ~{actual_diff_lines} changed lines (pressure: {pressure*100:.0f}%)")
+            if verbose:
+                status = "OK" if pressure < 0.5 else ("WARN" if pressure < 0.8 else "DANGER")
+                print(f"  {status} ~{actual_diff_lines} changed lines (pressure: {pressure*100:.0f}%)")
         else:
-            print("  ✓ No uncommitted changes")
+            if verbose:
+                print("  OK No uncommitted changes")
             metrics['git_diff'] = 0.0
     except Exception as e:
-        print(f"  ⚠️  Cannot check: {e}")
+        if verbose:
+            print(f"  WARN Cannot check: {e}")
         metrics['git_diff'] = 0.0
 
     # Calculate weighted pressure score
@@ -622,46 +653,54 @@ def cmd_context(args) -> None:
     # ROTATE_NOW: >= 80%
     if total_pressure < 0.30:
         danger_level = "SAFE"
-        danger_emoji = "✅"
         danger_color = "\033[92m"  # Green
     elif total_pressure < 0.55:
         danger_level = "WARN"
-        danger_emoji = "⚠️"
         danger_color = "\033[93m"  # Yellow
     elif total_pressure < 0.80:
         danger_level = "ROTATE_SOON"
-        danger_emoji = "🟡"
         danger_color = "\033[93m"  # Yellow
     else:
         danger_level = "ROTATE_NOW"
-        danger_emoji = "🔴"
         danger_color = "\033[91m"  # Red
 
     reset_color = "\033[0m"
 
     # Summary
-    print("\n" + "=" * 50)
-    print(f"Pressure Score: {total_pressure*100:.0f}%")
-    print(f"Danger Level:   {danger_color}{danger_level}{reset_color} {danger_emoji}")
+    if verbose:
+        print("\n" + "=" * 50)
+        print(f"Pressure Score: {total_pressure*100:.0f}%")
+        print(f"Danger Level:   {danger_color}{danger_level}{reset_color}")
 
-    # Action recommendations
-    print("\n📋 Recommendations:")
-    if danger_level == "SAFE":
-        print("  ✓ Context window is healthy")
-        print("  ✓ Continue normal operations")
-    elif danger_level == "WARN":
-        print("  ⚠️  Context pressure is elevated")
-        print("  💡 Consider running: workflow-admin handoff")
-        print("     (when convenient)")
-    elif danger_level == "ROTATE_SOON":
-        print("  🟡 Context window is under stress")
-        print("  ⚠️  Recommend running: workflow-admin handoff")
-        print("     before starting new tasks")
-    else:  # ROTATE_NOW
-        print("  🔴 CRITICAL: Context window exhausted")
-        print("  ❌ IMMEDIATE ACTION REQUIRED:")
-        print("     workflow-admin handoff")
-        print("     Then start a new claude-plan session")
+        # Action recommendations
+        print("\nRecommendations:")
+        if danger_level == "SAFE":
+            print("  OK Context window is healthy")
+            print("  OK Continue normal operations")
+        elif danger_level == "WARN":
+            print("  WARN Context pressure is elevated")
+            print("  INFO Consider: workflow-admin handoff (when convenient)")
+        elif danger_level == "ROTATE_SOON":
+            print("  WARN Context window is under stress")
+            print("  INFO Recommend: workflow-admin handoff before new tasks")
+        else:  # ROTATE_NOW
+            print("  CRITICAL Context window exhausted")
+            print("  REQUIRED: workflow-admin handoff")
+            print("  Then start a new claude-plan session")
+    else:
+        # Terse output
+        summary = f"context {total_pressure*100:.0f}% {danger_color}{danger_level}{reset_color}"
+        if danger_level == "SAFE":
+            summary += " - healthy"
+        elif danger_level == "WARN":
+            summary += " - elevated"
+        elif danger_level == "ROTATE_SOON":
+            summary += " - under stress"
+        else:
+            summary += " - exhausted"
+        print(summary)
+
+    if danger_level == "ROTATE_NOW":
         sys.exit(1)
 
 
@@ -672,12 +711,10 @@ def cmd_handoff(args) -> None:
 
     project_root = find_project_root()
     project_ai = project_root / ".project-ai"
+    full_mode = getattr(args, 'full', False)
 
-    handoff_content = f"""# Session Handoff
-**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-## Current Goal
-"""
+    ts = datetime.now().strftime('%m/%d %H:%M')
+    handoff_content = f"# Handoff {ts}\n"
 
     # Read current goal from TASK.md if exists
     task_file = project_ai / "TASK.md"
@@ -686,13 +723,14 @@ def cmd_handoff(args) -> None:
         # Extract first heading or paragraph
         for line in task_content.splitlines()[:10]:
             if line.strip() and not line.startswith("#"):
-                handoff_content += f"{line}\n"
+                handoff_content += f"**Goal**: {line}\n"
                 break
     else:
-        handoff_content += "No active task defined\n"
+        handoff_content += "**Goal**: No active task\n"
 
-    # Current branch
-    handoff_content += "\n## Current Branch\n"
+    # Current branch (compact)
+    if full_mode:
+        handoff_content += "\n## Branch\n"
     try:
         result = subprocess.run(
             ["git", "branch", "--show-current"],
@@ -702,7 +740,10 @@ def cmd_handoff(args) -> None:
             cwd=project_root
         )
         branch = result.stdout.strip()
-        handoff_content += f"`{branch}`\n"
+        if full_mode:
+            handoff_content += f"`{branch}`\n"
+        else:
+            handoff_content += f" **Branch**: `{branch}`"
 
         # Get latest commit
         result2 = subprocess.run(
@@ -712,12 +753,25 @@ def cmd_handoff(args) -> None:
             timeout=5,
             cwd=project_root
         )
-        handoff_content += f"Latest: {result2.stdout.strip()}\n"
-    except Exception as e:
-        handoff_content += f"Unknown: {e}\n"
+        if full_mode:
+            handoff_content += f"Latest: {result2.stdout.strip()}\n"
+        else:
+            handoff_content += f" **Last**: {result2.stdout.strip()}"
+    except Exception:
+        if full_mode:
+            handoff_content += "Unknown\n"
 
-    # Recent tasks from DB
-    handoff_content += "\n## Recent Tasks\n"
+    if not full_mode:
+        handoff_content += "\n"
+
+    # Recent tasks (compact: show count + last 2)
+    if full_mode:
+        handoff_content += "\n## Recent Tasks\n"
+        task_limit = 5
+    else:
+        handoff_content += "**Tasks**: "
+        task_limit = 2
+
     try:
         db = get_db(project_root)
         cur = db.conn.execute("""
@@ -725,35 +779,33 @@ def cmd_handoff(args) -> None:
             FROM attempts a
             JOIN tasks t ON a.task_id = t.id
             ORDER BY a.completed_at DESC
-            LIMIT 5
-        """)
+            LIMIT ?
+        """, (task_limit,))
         rows = cur.fetchall()
         if rows:
-            for summary, status, completed_at in rows:
-                status_emoji = "✅" if status == "completed" else "❌"
-                handoff_content += f"- {status_emoji} {summary}\n"
+            if full_mode:
+                for summary, status, _ in rows:
+                    status_emoji = "✅" if status == "completed" else "❌"
+                    handoff_content += f"- {status_emoji} {summary}\n"
+            else:
+                completed = sum(1 for _, s, _ in rows if s == "completed")
+                handoff_content += f"{completed}/{len(rows)} done"
+                for summary, status, _ in rows[:2]:
+                    if status == "completed":
+                        handoff_content += f", {summary[:30]}"
+                handoff_content += "\n"
         else:
-            handoff_content += "- No recent tasks\n"
+            handoff_content += "- No recent tasks\n" if full_mode else "none\n"
         db.close()
-    except Exception as e:
-        handoff_content += f"- Cannot load tasks: {e}\n"
+    except Exception:
+        handoff_content += "- Cannot load tasks\n" if full_mode else "?(error)\n"
 
-    # Recent failures
-    handoff_content += "\n## Recent Failures\n"
-    try:
-        db = get_db(project_root)
-        failures = db.get_recent_failures(limit=3)
-        if failures:
-            for f in failures:
-                handoff_content += f"- ❌ {f['summary']}: {f['status']}\n"
-        else:
-            handoff_content += "- No recent failures\n"
-        db.close()
-    except Exception as e:
-        handoff_content += f"- Cannot load failures: {e}\n"
+    # Modified files (compact: count only)
+    if full_mode:
+        handoff_content += "\n## Modified Files\n"
+    else:
+        handoff_content += "**Changes**: "
 
-    # Modified files
-    handoff_content += "\n## Modified Files\n"
     try:
         result = subprocess.run(
             ["git", "diff", "--name-only"],
@@ -762,50 +814,34 @@ def cmd_handoff(args) -> None:
             timeout=5,
             cwd=project_root
         )
-        if result.stdout.strip():
-            for f in result.stdout.strip().splitlines():
-                handoff_content += f"- `{f}`\n"
+        files = result.stdout.strip().splitlines() if result.stdout.strip() else []
+        if full_mode:
+            if files:
+                for f in files:
+                    handoff_content += f"- `{f}`\n"
+            else:
+                handoff_content += "- No uncommitted changes\n"
         else:
-            handoff_content += "- No uncommitted changes\n"
-    except Exception as e:
-        handoff_content += f"- Cannot check: {e}\n"
+            handoff_content += f"{len(files)} files\n" if files else "none\n"
+    except Exception:
+        handoff_content += "- Cannot check\n" if full_mode else "?(error)\n"
 
-    # Pending items from HANDOFF.md
-    handoff_content += "\n## Pending Items\n"
-    if task_file.exists():
-        # Look for TODO, pending, unfinished markers
-        task_content = task_file.read_text()
-        pending_found = False
-        for line in task_content.splitlines():
-            lower = line.lower()
-            if any(marker in lower for marker in ["todo:", "pending:", "unfinished:", "remaining:"]):
-                handoff_content += f"- {line.strip()}\n"
-                pending_found = True
-        if not pending_found:
-            handoff_content += "- No explicit pending items found\n"
+    # Next steps (compact)
+    if full_mode:
+        handoff_content += "\n## Next Steps\n"
+        handoff_content += "1. Run `workflow-admin resume` to get continuation prompt\n"
+        handoff_content += "2. Start new claude-plan session\n"
+        handoff_content += "3. Paste the resume prompt\n"
     else:
-        handoff_content += "- No TASK.md found\n"
-
-    # Next steps
-    handoff_content += "\n## Next Steps\n"
-    handoff_content += "1. Run `workflow-admin resume` to get continuation prompt\n"
-    handoff_content += "2. Start new claude-plan session\n"
-    handoff_content += "3. Paste the resume prompt\n"
-
-    # Resume command
-    handoff_content += "\n## Resume Command\n"
-    handoff_content += "```bash\n"
-    handoff_content += "workflow-admin resume\n"
-    handoff_content += "```\n"
+        handoff_content += "**Next**: `workflow-admin resume`\n"
 
     # Write handoff file
     output_file = project_ai / "SESSION_HANDOFF.md"
     output_file.write_text(handoff_content)
 
-    print(f"✅ Handoff file created: {output_file}")
-    print(f"\n⚠️  Start a NEW claude-plan session and run:")
-    print(f"   workflow-admin resume")
-
+    print(f"✅ Handoff: {output_file}")
+    if not full_mode:
+        print("   (use --full for detailed output)")
 
 def cmd_resume(args) -> None:
     """Generate resume prompt for new session."""
@@ -814,48 +850,47 @@ def cmd_resume(args) -> None:
 
     project_root = find_project_root()
     project_ai = project_root / ".project-ai"
+    full_mode = getattr(args, 'full', False)
 
-    resume_prompt = "# Session Resume\n\n"
+    ts = datetime.now().strftime('%m/%d %H:%M')
+    resume_prompt = f"# Resume {ts}\n\n"
 
-    # Read handoff file
+    # Read handoff file (compact: just key info)
     handoff_file = project_ai / "SESSION_HANDOFF.md"
     if handoff_file.exists():
-        resume_prompt += f"## Previous Session Handoff\n{handoff_file.read_text()}\n\n"
-    else:
-        resume_prompt += "*(No SESSION_HANDOFF.md found - starting fresh)*\n\n"
+        handoff_content = handoff_file.read_text()
+        if full_mode:
+            resume_prompt += f"## Previous Handoff\n{handoff_content}\n\n"
+        else:
+            # Extract key info from handoff (Goal, Branch, Tasks, Changes)
+            for line in handoff_content.splitlines():
+                if any(kw in line for kw in ["**Goal**", "**Branch**", "**Last**", "**Tasks**", "**Changes**", "**Next**"]):
+                    resume_prompt += line + "\n"
+            resume_prompt += "\n"
 
-    # Read HANDOFF.md for context
+    # Read HANDOFF.md for context (compact: first 15 lines)
     handoff_md = project_ai / "HANDOFF.md"
     if handoff_md.exists():
         content = handoff_md.read_text()
-        # Just show first 30 lines to avoid overwhelming
-        lines = content.splitlines()
-        if len(lines) > 30:
-            resume_prompt += f"## HANDOFF.md (first 30 of {len(lines)} lines)\n"
-            resume_prompt += "\n".join(lines[:30])
-            resume_prompt += f"\n\n... ({len(lines) - 30} more lines)\n"
+        lines_md = content.splitlines()
+        if full_mode:
+            if len(lines_md) > 30:
+                resume_prompt += f"## HANDOFF.md (first 30 of {len(lines_md)} lines)\n"
+                resume_prompt += "\n".join(lines_md[:30])
+                resume_prompt += f"\n\n... ({len(lines_md) - 30} more lines)\n"
+            else:
+                resume_prompt += f"## HANDOFF.md\n{content}\n"
         else:
-            resume_prompt += f"## HANDOFF.md\n{content}\n"
+            # Compact: first 15 lines
+            if len(lines_md) > 15:
+                resume_prompt += f"## HANDOFF.md (first 15 of {len(lines_md)} lines)\n"
+                resume_prompt += "\n".join(lines_md[:15])
+                resume_prompt += f"\n\n... ({len(lines_md) - 15} more lines)\n"
+            else:
+                resume_prompt += f"## HANDOFF.md\n{content}\n"
         resume_prompt += "\n"
 
-    # Query stats
-    resume_prompt += "## Workflow Stats\n"
-    try:
-        result = subprocess.run(
-            ["workflow-query", "stats"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            cwd=project_root
-        )
-        if result.returncode == 0:
-            resume_prompt += f"```\n{result.stdout}\n```\n\n"
-        else:
-            resume_prompt += "*Cannot query stats*\n\n"
-    except Exception as e:
-        resume_prompt += f"*Cannot query stats: {e}*\n\n"
-
-    # Git status
+    # Git status (compact: count only)
     resume_prompt += "## Git Status\n"
     try:
         result = subprocess.run(
@@ -865,23 +900,29 @@ def cmd_resume(args) -> None:
             timeout=5,
             cwd=project_root
         )
-        if result.stdout.strip():
-            resume_prompt += f"```\n{result.stdout}\n```\n\n"
+        files = result.stdout.strip().splitlines() if result.stdout.strip() else []
+        if full_mode:
+            if result.stdout.strip():
+                resume_prompt += f"```\n{result.stdout}```\n\n"
+            else:
+                resume_prompt += "*No uncommitted changes*\n\n"
         else:
-            resume_prompt += "*No uncommitted changes*\n\n"
+            resume_prompt += f"{len(files)} modified files\n\n"
     except Exception as e:
         resume_prompt += f"*Cannot check status: {e}*\n\n"
 
     # Continuation instruction
-    resume_prompt += "## Continuation\n\n"
-    resume_prompt += "Please continue from where the previous session left off. "
-    resume_prompt += "Review the handoff info above and proceed with the next steps.\n"
+    if full_mode:
+        resume_prompt += "## Continuation\n\n"
+        resume_prompt += "Please continue from where the previous session left off. "
+        resume_prompt += "Review the handoff info above and proceed with the next steps.\n"
+    else:
+        resume_prompt += "**Continue**: Review handoff above and proceed.\n"
 
     print("\n" + "=" * 50)
     print(resume_prompt)
     print("=" * 50)
     print("\n💡 Copy the above prompt into your new claude-plan session")
-
 
 def cmd_snapshot(args) -> None:
     """Create a session snapshot with current state."""
@@ -1018,17 +1059,144 @@ def cmd_snapshot(args) -> None:
     print(f"  Modified files: {len(snapshot_data.get('modified_files', []))}")
 
 
+def cmd_runtime_budget(args) -> None:
+    """Report runtime output budget usage."""
+    verbose = getattr(args, 'verbose', False)
+
+    def estimate_output_tokens(text: str) -> int:
+        """Estimate tokens from output text (1 token ≈ 4 chars for code)."""
+        if not text:
+            return 0
+        return len(text) // 4
+
+    project_root = find_project_root()
+    project_ai = project_root / ".project-ai"
+    db = get_db(project_root)
+
+    # 1. Current session runtime output estimate (last 2 hours)
+    print("\n📊 Runtime Output Budget")
+    print("=" * 50)
+
+    cur = db.conn.execute("""
+        SELECT a.result_summary, LENGTH(a.result_summary) as output_size,
+               a.status, a.completed_at
+        FROM attempts a
+        WHERE a.completed_at > datetime('now', '-2 hours')
+        ORDER BY a.completed_at DESC
+    """)
+    recent_attempts = cur.fetchall()
+
+    session_output_chars = sum(a[1] or 0 for a in recent_attempts)
+    session_output_tokens = estimate_output_tokens("".join(a[0] or "" for a in recent_attempts))
+
+    if verbose:
+        print(f"\nCurrent Session (last 2 hours):")
+        print(f"  Attempts:        {len(recent_attempts)}")
+        print(f"  Output chars:    {session_output_chars:,}")
+        print(f"  Est. tokens:     ~{session_output_tokens:,}")
+    else:
+        print(f" session {len(recent_attempts)} attempts, ~{session_output_tokens:,} tokens")
+
+    # 2. Last 5 maximum outputs (all time)
+    cur = db.conn.execute("""
+        SELECT a.id, t.summary, LENGTH(a.result_summary) as output_size,
+               a.status, a.completed_at
+        FROM attempts a
+        JOIN tasks t ON a.task_id = t.id
+        WHERE a.result_summary IS NOT NULL AND a.result_summary != ''
+        ORDER BY output_size DESC
+        LIMIT 5
+    """)
+    max_outputs = cur.fetchall()
+
+    if verbose:
+        print(f"\n📈 Top 5 Largest Outputs:")
+        for idx, (attempt_id, summary, size, status, completed_at) in enumerate(max_outputs, 1):
+            summary_short = (summary[:40] + "...") if len(summary) > 40 else summary
+            print(f"  {idx}. {summary_short:45} {size:>8,} chars ({status})")
+    else:
+        if max_outputs:
+            max_size = max_outputs[0][2] if max_outputs else 0
+            print(f" max_alltime {max_size:,} chars")
+
+    # 3. Reviewer/tester output size
+    # Reviewer outputs are from attempts with executor='reviewer'
+    cur = db.conn.execute("""
+        SELECT executor, COUNT(*) as count,
+               SUM(LENGTH(result_summary)) as total_output
+        FROM attempts
+        WHERE executor IN ('reviewer', 'tester', 'claude-reviewer', 'claude-tester')
+          AND result_summary IS NOT NULL
+        GROUP BY executor
+    """)
+    reviewer_stats = cur.fetchall()
+
+    if verbose:
+        print(f"\n🔍 Reviewer/Tester Output:")
+        if reviewer_stats:
+            for executor, count, total_output in reviewer_stats:
+                avg_output = total_output // count if count > 0 else 0
+                print(f"  {executor:20} {count:3} attempts, avg {avg_output:,} chars")
+        else:
+            print("  No reviewer/tester attempts recorded")
+    else:
+        if reviewer_stats:
+            total = sum(s[2] or 0 for s in reviewer_stats)
+            count = sum(s[1] or 0 for s in reviewer_stats)
+            print(f" reviewer {count} attempts, ~{total:,} chars total")
+
+    # 4. Handoff sizes
+    handoff_sizes = []
+    handoff_file = project_ai / "HANDOFF.md"
+    if handoff_file.exists():
+        handoff_sizes.append(("HANDOFF.md", len(handoff_file.read_text())))
+
+    session_handoff = project_ai / "SESSION_HANDOFF.md"
+    if session_handoff.exists():
+        handoff_sizes.append(("SESSION_HANDOFF.md", len(session_handoff.read_text())))
+
+    if verbose:
+        print(f"\n🤝 Handoff Files:")
+        if handoff_sizes:
+            for name, size in handoff_sizes:
+                print(f"  {name:25} {size:,} chars (~{size//4:,} tokens)")
+        else:
+            print("  No handoff files found")
+    else:
+        if handoff_sizes:
+            total_handoff = sum(s[1] for s in handoff_sizes)
+            print(f" handoff {len(handoff_sizes)} files, ~{total_handoff:,} chars")
+
+    # Budget analysis
+    if verbose:
+        print(f"\n💰 Budget Analysis:")
+        # Assuming 200K context, with ~30% for output
+        output_budget = 60000  # 60K tokens for output
+        output_used_pct = min(100, (session_output_tokens / output_budget) * 100)
+
+        print(f"  Output budget:    ~{output_budget:,} tokens (30% of 200K context)")
+        print(f"  Session output:   ~{session_output_tokens:,} tokens ({output_used_pct:.1f}%)")
+
+        if output_used_pct < 30:
+            status = "OK"
+        elif output_used_pct < 60:
+            status = "WARN"
+        else:
+            status = "DANGER"
+        print(f"  Status:           {status}")
+
+    db.close()
+
+
 def cmd_prompt_budget(args) -> None:
     """Report prompt/token budget usage."""
-    print("📊 Prompt Budget Report")
-    print("=" * 50)
+    verbose = getattr(args, 'verbose', False)
 
     # Helper to estimate tokens (rough: 1 line ≈ 3 tokens for code/docs)
     def estimate_tokens(lines: int) -> int:
         return int(lines * 3)
 
     # Core CLAUDE.md files
-    print("\n📄 Core Context Files:")
     global_claude = Path.home() / ".claude" / "CLAUDE.md"
     local_claude = Path.cwd() / "CLAUDE.md"
 
@@ -1042,14 +1210,15 @@ def cmd_prompt_budget(args) -> None:
         if path.exists():
             lines = len(path.read_text().splitlines())
             tokens = estimate_tokens(lines)
-            print(f"  {name:25} {lines:3} lines (~{tokens:3} tokens)")
+            if verbose:
+                print(f"  {name:25} {lines:3} lines (~{tokens:3} tokens)")
             total_lines += lines
             total_tokens += tokens
 
-    print(f"  {'Subtotal':25} {total_lines:3} lines (~{total_tokens:3} tokens)")
+    if verbose:
+        print(f"  {'Subtotal':25} {total_lines:3} lines (~{total_tokens:3} tokens)")
 
     # Orchestrator scripts
-    print("\n🐍 Orchestrator Scripts:")
     orch_base = Path(__file__).parent
     orch_files = [
         ("workflow_orchestrator.py", 209),
@@ -1061,64 +1230,77 @@ def cmd_prompt_budget(args) -> None:
     orch_tokens = 0
     for name, lines in orch_files:
         tokens = estimate_tokens(lines)
-        print(f"  {name:25} {lines:3} lines (~{tokens:3} tokens)")
+        if verbose:
+            print(f"  {name:25} {lines:3} lines (~{tokens:3} tokens)")
         orch_lines += lines
         orch_tokens += tokens
-    print(f"  {'Subtotal':25} {orch_lines:3} lines (~{orch_tokens:3} tokens)")
+    if verbose:
+        print(f"  {'Subtotal':25} {orch_lines:3} lines (~{orch_tokens:3} tokens)")
 
     # Skills index
-    print("\n🔧 Skills Index:")
     skills_dir = Path.home() / ".claude" / "skills"
     skill_count = 0
     if skills_dir.exists():
         skill_count = len(list(skills_dir.glob("**/SKILL.md")))
     skill_tokens = skill_count * 20  # ~20 tokens per skill entry
-    print(f"  Skill definitions        {skill_count:2} entries (~{skill_tokens:3} tokens)")
+
+    if verbose:
+        print(f"  Skill definitions        {skill_count:2} entries (~{skill_tokens:3} tokens)")
 
     # Settings
-    print("\n⚙️  Configuration:")
     settings_file = Path.home() / ".claude" / "settings.json"
+    settings_tokens = 0
     if settings_file.exists():
         lines = len(settings_file.read_text().splitlines())
-        tokens = int(lines / 2)  # JSON is dense
-        print(f"  settings.json           {lines:3} lines (~{tokens:3} tokens)")
+        settings_tokens = int(lines / 2)  # JSON is dense
+        if verbose:
+            print(f"  settings.json           {lines:3} lines (~{settings_tokens:3} tokens)")
 
     # Session overhead summary
-    print("\n" + "=" * 50)
-    print("📋 Session Overhead:")
-    overhead_total = total_tokens + orch_tokens + skill_tokens + tokens
-    print(f"  CLAUDE.md files        ~{total_tokens:3} tokens")
-    print(f"  Orchestrator code      ~{orch_tokens:3} tokens")
-    print(f"  Skills index           ~{skill_tokens:3} tokens")
-    print(f"  Settings               ~{tokens:3} tokens")
-    print(f"  {'='*30}")
-    print(f"  TOTAL OVERHEAD         ~{overhead_total:3} tokens")
-
-    # Compression analysis
-    print("\n📉 Compression Analysis:")
-    original_estimate = 4350
-    compression_pct = int((1 - overhead_total / original_estimate) * 100)
-    print(f"  Original (est):        ~{original_estimate} tokens")
-    print(f"  Compressed (current):  ~{overhead_total} tokens")
-    print(f"  Reduction:             ~{compression_pct}%")
+    overhead_total = total_tokens + orch_tokens + skill_tokens + settings_tokens
 
     # Budget breakdown
-    print("\n💰 Token Budget (200K context):")
     budget_used = overhead_total + 10000  # + session memory
     budget_remaining = 200000 - budget_used
-    print(f"  System overhead:       ~{overhead_total} tokens")
-    print(f"  Session memory:        ~10,000 tokens")
-    print(f"  Available for code:    ~{budget_remaining} tokens")
-    print(f"  Utilization:           {int(budget_used/2000)}%")
 
-    print("\n" + "=" * 50)
-    print(f"✅ Report complete. Overhead is {'healthy' if overhead_total < 2000 else 'HIGH'}")
+    if verbose:
+        print("\nSession Overhead:")
+        print(f"  CLAUDE.md files        ~{total_tokens:3} tokens")
+        print(f"  Orchestrator code      ~{orch_tokens:3} tokens")
+        print(f"  Skills index           ~{skill_tokens:3} tokens")
+        print(f"  Settings               ~{settings_tokens:3} tokens")
+        print(f"  {'='*30}")
+        print(f"  TOTAL OVERHEAD         ~{overhead_total:3} tokens")
+
+        # Compression analysis
+        original_estimate = 4350
+        compression_pct = int((1 - overhead_total / original_estimate) * 100)
+        print(f"\nCompression Analysis:")
+        print(f"  Original (est):        ~{original_estimate} tokens")
+        print(f"  Compressed (current):  ~{overhead_total} tokens")
+        print(f"  Reduction:             ~{compression_pct}%")
+
+        # Budget breakdown
+        print(f"\nToken Budget (200K context):")
+        print(f"  System overhead:       ~{overhead_total} tokens")
+        print(f"  Session memory:        ~10,000 tokens")
+        print(f"  Available for code:    ~{budget_remaining} tokens")
+        print(f"  Utilization:           {int(budget_used/2000)}%")
+        print(f"\nReport complete. Overhead is {'healthy' if overhead_total < 2000 else 'HIGH'}")
+    else:
+        # Terse output
+        health = "OK" if overhead_total < 2000 else "HIGH"
+        utilization = int(budget_used / 2000)
+        print(f"budget {health} - {overhead_total} overhead, {utilization}% utilized, ~{budget_remaining} available")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="workflow-admin - maintenance CLI for claude-workflow-bootstrap"
     )
+    parser.add_argument("-v", "--verbose", action="store_true",
+                       help="Show detailed output (default: terse)")
+
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # health command
@@ -1145,13 +1327,18 @@ def main() -> None:
     subparsers.add_parser("context", help="Check context window health")
 
     # handoff command
-    subparsers.add_parser("handoff", help="Generate session handoff file")
+    handoff_p = subparsers.add_parser("handoff", help="Generate session handoff file")
+    handoff_p.add_argument("--full", action="store_true", help="Include full details (default: compact)")
 
     # resume command
-    subparsers.add_parser("resume", help="Generate resume prompt for new session")
+    resume_p = subparsers.add_parser("resume", help="Generate resume prompt for new session")
+    resume_p.add_argument("--full", action="store_true", help="Include full details (default: compact)")
 
     # prompt-budget command
     subparsers.add_parser("prompt-budget", help="Report prompt/token budget usage")
+
+    # runtime-budget command
+    subparsers.add_parser("runtime-budget", help="Report runtime output budget usage")
 
     # snapshot command
     subparsers.add_parser("snapshot", help="Create session snapshot with current state")
@@ -1173,6 +1360,7 @@ def main() -> None:
         "handoff": cmd_handoff,
         "resume": cmd_resume,
         "prompt-budget": cmd_prompt_budget,
+        "runtime-budget": cmd_runtime_budget,
         "snapshot": cmd_snapshot,
     }
 

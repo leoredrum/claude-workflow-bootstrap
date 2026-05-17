@@ -265,11 +265,17 @@ def check_unsafe_overwrite(project_root: Path, commands: list) -> tuple:
     return unsafe, safe_commands
 
 
-def validate_diff(project_root: Path) -> dict:
-    """Validate git diff for safety."""
+def validate_diff(project_root: Path, full: bool = False) -> dict:
+    """Validate git diff for safety.
+
+    Args:
+        project_root: Path to project root
+        full: If True, use full diff; otherwise use --stat (compact)
+    """
     try:
+        diff_cmd = ["git", "diff", "--numstat"]
         result = subprocess.run(
-            ["git", "diff", "--numstat"],
+            diff_cmd,
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -677,15 +683,23 @@ def apply_commands(commands: list, project_root: Path, project_ai_dir: Path) -> 
     return applied, len(safe_commands)
 
 
-def generate_patch(project_root: Path, project_ai_dir: Path):
-    """Generate git diff patch."""
+def generate_patch(project_root: Path, project_ai_dir: Path, full: bool = False):
+    """Generate git diff patch.
+
+    Args:
+        project_root: Path to project root
+        project_ai_dir: Path to .project-ai directory
+        full: If True, generate full diff; otherwise use --stat (compact)
+    """
     baseline = project_ai_dir / ".baseline.diff"
     if baseline.exists():
         baseline.read_text()
 
     try:
+        # Use --stat for compact output, --full-diff for full output
+        diff_cmd = ["git", "diff", "--stat", "HEAD"] if not full else ["git", "diff", "HEAD"]
         result = subprocess.run(
-            ["git", "diff", "HEAD"],
+            diff_cmd,
             cwd=project_root,
             capture_output=True,
             text=True,
