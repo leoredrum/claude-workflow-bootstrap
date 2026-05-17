@@ -108,12 +108,37 @@ claude-plan
 
 | 命令 | 功能 | 只读 |
 |------|------|------|
-| health | 系统健康检查 | ✓ |
+| health | 系统健康检查（含 context） | ✓ |
+| context | Context window 状态检查 | ✓ |
+| handoff | 生成会话交接文件 | ✗ |
+| resume | 生成新会话恢复命令 | ✓ |
 | metrics | 统计指标 | ✓ |
 | failures | 失败分析 | ✓ |
 | compact | 数据压缩 | (--dry-run) |
 | stuck-workers | 卡住的 workers | ✓ |
 | clean | 临时文件清理 | (--apply) |
+
+## Context Rotation（会话轮换）
+
+Claude Code **不会自动刷新**上下文窗口。长会话会卡死。
+
+**阈值：**
+- HANDOFF.md > 300 行 → WARN
+- MEMORY.md > 500 行 → WARN
+- PATCH.diff > 800 行 → WARN
+- 当前 session 任务数 > 5 → WARN
+- 任意两个 WARN → ROTATE_REQUIRED
+
+**使用流程：**
+```bash
+# 检查 context
+workflow-admin context
+
+# 如果需要轮换
+workflow-admin handoff  # 生成 SESSION_HANDOFF.md
+# 新开 claude-plan 会话
+workflow-admin resume   # 获取恢复 prompt
+```
 
 ## mattpocock Skills 白名单
 

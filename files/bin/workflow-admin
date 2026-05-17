@@ -135,6 +135,58 @@ def cmd_health(args) -> None:
     except Exception as e:
         print(f"  ⚠️  Cannot check workers: {e}")
 
+    # Check context health
+    print("\n📊 Context Health:")
+    WARN_HANDOFF_LINES = 300
+    WARN_MEMORY_LINES = 500
+    WARN_PATCH_LINES = 800
+    WARN_SESSION_TASKS = 5
+
+    context_warnings = 0
+
+    handoff_file = project_ai / "HANDOFF.md"
+    if handoff_file.exists():
+        lines = len(handoff_file.read_text().splitlines())
+        if lines >= WARN_HANDOFF_LINES:
+            print(f"  ⚠️  HANDOFF.md: {lines} lines (>= {WARN_HANDOFF_LINES})")
+            context_warnings += 1
+
+    memory_file = project_ai / "MEMORY.md"
+    if memory_file.exists():
+        lines = len(memory_file.read_text().splitlines())
+        if lines >= WARN_MEMORY_LINES:
+            print(f"  ⚠️  MEMORY.md: {lines} lines (>= {WARN_MEMORY_LINES})")
+            context_warnings += 1
+
+    patch_file = project_ai / "PATCH.diff"
+    if patch_file.exists():
+        lines = len(patch_file.read_text().splitlines())
+        if lines >= WARN_PATCH_LINES:
+            print(f"  ⚠️  PATCH.diff: {lines} lines (>= {WARN_PATCH_LINES})")
+            context_warnings += 1
+
+    try:
+        db = get_db(project_root)
+        cur = db.conn.execute("""
+            SELECT COUNT(*) FROM attempts
+            WHERE started_at > datetime('now', '-2 hours')
+        """)
+        session_tasks = cur.fetchone()[0]
+        if session_tasks >= WARN_SESSION_TASKS:
+            print(f"  ⚠️  Session tasks: {session_tasks} (>= {WARN_SESSION_TASKS})")
+            context_warnings += 1
+        db.close()
+    except:
+        pass
+
+    if context_warnings == 0:
+        print("  ✓ Context window healthy")
+    elif context_warnings == 1:
+        print(f"  ⚠️  {context_warnings} context warning")
+    else:
+        print(f"  ❌ {context_warnings} context warnings - consider: workflow-admin handoff")
+        issues.append(f"Context window: {context_warnings} warnings")
+
     # Summary
     print("\n" + "=" * 50)
     if issues:
@@ -449,6 +501,356 @@ def cmd_clean(args) -> None:
     print(f"\n✅ Cleaned {cleaned} item(s)")
 
 
+def cmd_context(args) -> None:
+    """Check context window health."""
+    print("🔍 Context Window Check")
+    print("=" * 50)
+
+    project_root = find_project_root()
+    project_ai = project_root / ".project-ai"
+
+    # Thresholds
+    WARN_HANDOFF_LINES = 300
+    WARN_MEMORY_LINES = 500
+    WARN_PATCH_LINES = 800
+    WARN_SESSION_TASKS = 5
+    WARN_GIT_DIFF_LINES = 200
+
+    warnings = []
+
+    # Check HANDOFF.md
+    print("\n📄 HANDOFF.md:")
+    handoff_file = project_ai / "HANDOFF.md"
+    if handoff_file.exists():
+        lines = len(handoff_file.read_text().splitlines())
+        status = "✓" if lines < WARN_HANDOFF_LINES else "⚠️"
+        print(f"  {status} {lines} lines (threshold: {WARN_HANDOFF_LINES})")
+        if lines >= WARN_HANDOFF_LINES:
+            warnings.append(f"HANDOFF.md: {lines} lines >= {WARN_HANDOFF_LINES}")
+    else:
+        print("  ✓ File not found (OK)")
+
+    # Check MEMORY.md
+    print("\n📄 MEMORY.md:")
+    memory_file = project_ai / "MEMORY.md"
+    if memory_file.exists():
+        lines = len(memory_file.read_text().splitlines())
+        status = "✓" if lines < WARN_MEMORY_LINES else "⚠️"
+        print(f"  {status} {lines} lines (threshold: {WARN_MEMORY_LINES})")
+        if lines >= WARN_MEMORY_LINES:
+            warnings.append(f"MEMORY.md: {lines} lines >= {WARN_MEMORY_LINES}")
+    else:
+        print("  ✓ File not found (OK)")
+
+    # Check PATCH.diff
+    print("\n📄 PATCH.diff:")
+    patch_file = project_ai / "PATCH.diff"
+    if patch_file.exists():
+        lines = len(patch_file.read_text().splitlines())
+        status = "✓" if lines < WARN_PATCH_LINES else "⚠️"
+        print(f"  {status} {lines} lines (threshold: {WARN_PATCH_LINES})")
+        if lines >= WARN_PATCH_LINES:
+            warnings.append(f"PATCH.diff: {lines} lines >= {WARN_PATCH_LINES}")
+    else:
+        print("  ✓ File not found (OK)")
+
+    # Check RESULT.md size
+    print("\n📄 RESULT.md:")
+    result_file = project_ai / "RESULT.md"
+    if result_file.exists():
+        size = result_file.stat().st_size
+        size_kb = size / 1024
+        status = "✓" if size_kb < 50 else "⚠️"
+        print(f"  {status} {size_kb:.1f} KB (threshold: 50 KB)")
+        if size_kb >= 50:
+            warnings.append(f"RESULT.md: {size_kb:.1f} KB >= 50 KB")
+    else:
+        print("  ✓ File not found (OK)")
+
+    # Check SQLite recent tasks
+    print("\n🗄️  SQLite Session Tasks:")
+    try:
+        db = get_db(project_root)
+        cur = db.conn.execute("""
+            SELECT COUNT(*) FROM attempts
+            WHERE started_at > datetime('now', '-2 hours')
+        """)
+        session_tasks = cur.fetchone()[0]
+        status = "✓" if session_tasks < WARN_SESSION_TASKS else "⚠️"
+        print(f"  {status} {session_tasks} tasks (threshold: {WARN_SESSION_TASKS})")
+        if session_tasks >= WARN_SESSION_TASKS:
+            warnings.append(f"Session: {session_tasks} tasks >= {WARN_SESSION_TASKS}")
+        db.close()
+    except Exception as e:
+        print(f"  ⚠️  Cannot check: {e}")
+
+    # Check git diff size
+    print("\n📦 Git Diff Size:")
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--stat"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=project_root
+        )
+        if result.stdout.strip():
+            diff_lines = len(result.stdout.splitlines())
+            # Count actual changed lines
+            result2 = subprocess.run(
+                ["git", "diff"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=project_root
+            )
+            actual_diff_lines = len([l for l in result2.stdout.splitlines() if l.startswith("+") or l.startswith("-")])
+            status = "✓" if actual_diff_lines < WARN_GIT_DIFF_LINES else "⚠️"
+            print(f"  {status} ~{actual_diff_lines} changed lines (threshold: {WARN_GIT_DIFF_LINES})")
+            if actual_diff_lines >= WARN_GIT_DIFF_LINES:
+                warnings.append(f"Git diff: ~{actual_diff_lines} lines >= {WARN_GIT_DIFF_LINES}")
+        else:
+            print("  ✓ No uncommitted changes")
+    except Exception as e:
+        print(f"  ⚠️  Cannot check: {e}")
+
+    # Summary
+    print("\n" + "=" * 50)
+    if len(warnings) >= 2:
+        print("❌ ROTATE_REQUIRED")
+        print(f"   {len(warnings)} warnings >= 2 thresholds")
+        print("\n⚠️  Action required:")
+        print("   workflow-admin handoff")
+        print("   Then start a new claude-plan session")
+        sys.exit(1)
+    elif warnings:
+        print("⚠️  WARN")
+        print(f"   {len(warnings)} warning(s):")
+        for w in warnings:
+            print(f"   - {w}")
+        print("\n💡 Consider running: workflow-admin handoff")
+    else:
+        print("✅ OK - Context window is healthy")
+
+
+def cmd_handoff(args) -> None:
+    """Generate session handoff file."""
+    print("🤝 Generating Session Handoff")
+    print("=" * 50)
+
+    project_root = find_project_root()
+    project_ai = project_root / ".project-ai"
+
+    handoff_content = f"""# Session Handoff
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Current Goal
+"""
+
+    # Read current goal from TASK.md if exists
+    task_file = project_ai / "TASK.md"
+    if task_file.exists():
+        task_content = task_file.read_text()
+        # Extract first heading or paragraph
+        for line in task_content.splitlines()[:10]:
+            if line.strip() and not line.startswith("#"):
+                handoff_content += f"{line}\n"
+                break
+    else:
+        handoff_content += "No active task defined\n"
+
+    # Current branch
+    handoff_content += "\n## Current Branch\n"
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=project_root
+        )
+        branch = result.stdout.strip()
+        handoff_content += f"`{branch}`\n"
+
+        # Get latest commit
+        result2 = subprocess.run(
+            ["git", "log", "--oneline", "-1"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=project_root
+        )
+        handoff_content += f"Latest: {result2.stdout.strip()}\n"
+    except Exception as e:
+        handoff_content += f"Unknown: {e}\n"
+
+    # Recent tasks from DB
+    handoff_content += "\n## Recent Tasks\n"
+    try:
+        db = get_db(project_root)
+        cur = db.conn.execute("""
+            SELECT t.summary, a.status, a.completed_at
+            FROM attempts a
+            JOIN tasks t ON a.task_id = t.id
+            ORDER BY a.completed_at DESC
+            LIMIT 5
+        """)
+        rows = cur.fetchall()
+        if rows:
+            for summary, status, completed_at in rows:
+                status_emoji = "✅" if status == "completed" else "❌"
+                handoff_content += f"- {status_emoji} {summary}\n"
+        else:
+            handoff_content += "- No recent tasks\n"
+        db.close()
+    except Exception as e:
+        handoff_content += f"- Cannot load tasks: {e}\n"
+
+    # Recent failures
+    handoff_content += "\n## Recent Failures\n"
+    try:
+        db = get_db(project_root)
+        failures = db.get_recent_failures(limit=3)
+        if failures:
+            for f in failures:
+                handoff_content += f"- ❌ {f['summary']}: {f['status']}\n"
+        else:
+            handoff_content += "- No recent failures\n"
+        db.close()
+    except Exception as e:
+        handoff_content += f"- Cannot load failures: {e}\n"
+
+    # Modified files
+    handoff_content += "\n## Modified Files\n"
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=project_root
+        )
+        if result.stdout.strip():
+            for f in result.stdout.strip().splitlines():
+                handoff_content += f"- `{f}`\n"
+        else:
+            handoff_content += "- No uncommitted changes\n"
+    except Exception as e:
+        handoff_content += f"- Cannot check: {e}\n"
+
+    # Pending items from HANDOFF.md
+    handoff_content += "\n## Pending Items\n"
+    if task_file.exists():
+        # Look for TODO, pending, unfinished markers
+        task_content = task_file.read_text()
+        pending_found = False
+        for line in task_content.splitlines():
+            lower = line.lower()
+            if any(marker in lower for marker in ["todo:", "pending:", "unfinished:", "remaining:"]):
+                handoff_content += f"- {line.strip()}\n"
+                pending_found = True
+        if not pending_found:
+            handoff_content += "- No explicit pending items found\n"
+    else:
+        handoff_content += "- No TASK.md found\n"
+
+    # Next steps
+    handoff_content += "\n## Next Steps\n"
+    handoff_content += "1. Run `workflow-admin resume` to get continuation prompt\n"
+    handoff_content += "2. Start new claude-plan session\n"
+    handoff_content += "3. Paste the resume prompt\n"
+
+    # Resume command
+    handoff_content += "\n## Resume Command\n"
+    handoff_content += "```bash\n"
+    handoff_content += "workflow-admin resume\n"
+    handoff_content += "```\n"
+
+    # Write handoff file
+    output_file = project_ai / "SESSION_HANDOFF.md"
+    output_file.write_text(handoff_content)
+
+    print(f"✅ Handoff file created: {output_file}")
+    print(f"\n⚠️  Start a NEW claude-plan session and run:")
+    print(f"   workflow-admin resume")
+
+
+def cmd_resume(args) -> None:
+    """Generate resume prompt for new session."""
+    print("🔄 Session Resume Prompt")
+    print("=" * 50)
+
+    project_root = find_project_root()
+    project_ai = project_root / ".project-ai"
+
+    resume_prompt = "# Session Resume\n\n"
+
+    # Read handoff file
+    handoff_file = project_ai / "SESSION_HANDOFF.md"
+    if handoff_file.exists():
+        resume_prompt += f"## Previous Session Handoff\n{handoff_file.read_text()}\n\n"
+    else:
+        resume_prompt += "*(No SESSION_HANDOFF.md found - starting fresh)*\n\n"
+
+    # Read HANDOFF.md for context
+    handoff_md = project_ai / "HANDOFF.md"
+    if handoff_md.exists():
+        content = handoff_md.read_text()
+        # Just show first 30 lines to avoid overwhelming
+        lines = content.splitlines()
+        if len(lines) > 30:
+            resume_prompt += f"## HANDOFF.md (first 30 of {len(lines)} lines)\n"
+            resume_prompt += "\n".join(lines[:30])
+            resume_prompt += f"\n\n... ({len(lines) - 30} more lines)\n"
+        else:
+            resume_prompt += f"## HANDOFF.md\n{content}\n"
+        resume_prompt += "\n"
+
+    # Query stats
+    resume_prompt += "## Workflow Stats\n"
+    try:
+        result = subprocess.run(
+            ["workflow-query", "stats"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=project_root
+        )
+        if result.returncode == 0:
+            resume_prompt += f"```\n{result.stdout}\n```\n\n"
+        else:
+            resume_prompt += "*Cannot query stats*\n\n"
+    except Exception as e:
+        resume_prompt += f"*Cannot query stats: {e}*\n\n"
+
+    # Git status
+    resume_prompt += "## Git Status\n"
+    try:
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=project_root
+        )
+        if result.stdout.strip():
+            resume_prompt += f"```\n{result.stdout}\n```\n\n"
+        else:
+            resume_prompt += "*No uncommitted changes*\n\n"
+    except Exception as e:
+        resume_prompt += f"*Cannot check status: {e}*\n\n"
+
+    # Continuation instruction
+    resume_prompt += "## Continuation\n\n"
+    resume_prompt += "Please continue from where the previous session left off. "
+    resume_prompt += "Review the handoff info above and proceed with the next steps.\n"
+
+    print("\n" + "=" * 50)
+    print(resume_prompt)
+    print("=" * 50)
+    print("\n💡 Copy the above prompt into your new claude-plan session")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="workflow-admin - maintenance CLI for claude-workflow-bootstrap"
@@ -475,6 +877,15 @@ def main() -> None:
     clean_p = subparsers.add_parser("clean", help="Clean temporary artifacts")
     clean_p.add_argument("--apply", action="store_true", help="Actually clean (dry-run by default)")
 
+    # context command
+    subparsers.add_parser("context", help="Check context window health")
+
+    # handoff command
+    subparsers.add_parser("handoff", help="Generate session handoff file")
+
+    # resume command
+    subparsers.add_parser("resume", help="Generate resume prompt for new session")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -488,6 +899,9 @@ def main() -> None:
         "compact": cmd_compact,
         "stuck-workers": cmd_stuck_workers,
         "clean": cmd_clean,
+        "context": cmd_context,
+        "handoff": cmd_handoff,
+        "resume": cmd_resume,
     }
 
     commands[args.command](args)

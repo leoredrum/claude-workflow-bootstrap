@@ -28,7 +28,37 @@ These rules apply to all Claude Code sessions across all projects.
    - Track decisions in `.project-ai/DECISIONS.md`
    - Maintain handoff notes in `.project-ai/HANDOFF.md`
 
-3. **Implementation Boundary Rules (CRITICAL)**
+3. **Context Rotation Rules (CRITICAL)**
+
+   Claude Code **does not automatically refresh** the context window. When the session grows too long, it will hit the context limit and freeze.
+
+   **You MUST check context health during long tasks:**
+
+   After completing each phase or milestone, run:
+   ```bash
+   workflow-admin context
+   ```
+
+   **If output is ROTATE_REQUIRED:**
+   1. STOP - Do not continue implementing
+   2. Run: `workflow-admin handoff`
+   3. Tell user: "Session needs rotation. Start a new claude-plan."
+   4. Run: `workflow-admin resume` (get the resume prompt)
+   5. Do NOT force the session to continue
+
+   **Context thresholds:**
+   - HANDOFF.md > 300 lines → WARN
+   - MEMORY.md > 500 lines → WARN
+   - PATCH.diff > 800 lines → WARN
+   - Session tasks > 5 → WARN
+   - 2+ WARN → ROTATE_REQUIRED
+
+   **Quick context check:**
+   ```bash
+   workflow-admin health  # Includes context health
+   ```
+
+4. **Implementation Boundary Rules (CRITICAL)**
 
    - **Claude Code Built-in Agents RESTRICTION**
      - Claude Code built-in general-purpose agent is NOT allowed to perform coding implementation
@@ -59,7 +89,7 @@ These rules apply to all Claude Code sessions across all projects.
      - Whether local-coder was used (yes/no)
      - Next steps or handoff information
 
-4. **Code Quality**:
+5. **Code Quality**:
    - Follow existing code style and patterns
    - Write clear, self-documenting code
    - Add comments only when necessary to explain complex logic

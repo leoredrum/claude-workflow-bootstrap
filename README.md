@@ -125,6 +125,27 @@ skill-router "如何优化 Python 性能"
 1. **不是 oMLX** - 当前使用 Ollama + qwen2.5-coder:32b
 2. **不适合无人值守高风险任务** - 需要人工审核
 3. **本地模型遵循度** - anchor 精确性仍有瓶颈
+4. **Context Window 不会自动刷新** - 长会话需要手动轮换
+
+### Context Rotation（会话轮换）
+
+Claude Code **不会自动刷新**上下文窗口。当会话过长时会卡死。
+
+**在长任务中，每完成一个阶段必须检查：**
+```bash
+workflow-admin context
+```
+
+**如果输出 ROTATE_REQUIRED：**
+- 停止实现，不要硬撑
+- 运行 `workflow-admin handoff`
+- 新开 `claude-plan` 会话
+- 运行 `workflow-admin resume` 获取恢复命令
+
+**新会话恢复步骤：**
+1. 新开 `claude-plan`
+2. 运行 `workflow-admin resume`，复制输出
+3. 将恢复 prompt 粘贴到新会话中
 
 ## 下一阶段
 
