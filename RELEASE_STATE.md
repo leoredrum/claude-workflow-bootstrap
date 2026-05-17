@@ -7,35 +7,54 @@
 
 ## 系统定位
 
-**Claude Plan + Local Coder Workflow Bootstrap**
+**Claude Plan + Local Coder 多 Agent 工作流 Bootstrap**
 
-这是 Leo 的完整 coding workflow 一键恢复包，用于在新 MacBook 上快速恢复结构化开发工作流。
+这是 Leo 的多 Agent 工作流一键恢复包，用于在新 MacBook 上快速恢复完整的结构化开发工作流。
+
+### 多 Agent 架构说明
+
+本系统采用 **主 agent + 本地子 agent** 模式：
+
+- **Claude 主 agent**: 负责理解需求、规划任务、审查结果、汇报
+- **local-coder 本地子 agent**: 负责实际代码修改
+- **workflow-orchestrator**: 负责任务排队、分配、恢复
+- **reviewer/tester**: 负责代码审查和测试
+
+**重要**: Claude 主 agent **不直接写代码**，所有代码修改由 local-coder 本地子 agent 执行。这样设计是为了：
+- 节省主 agent 上下文
+- 避免 Claude 长会话失忆
+- 把任务状态写入文件和 SQLite
+- 让本地模型承担重复 coding 工作
 
 ## 系统架构
 
 ```
-Claude Planner
-    ↓ 规划任务
+用户
+  ↓ 理解需求
+Claude 主 agent（claude / claude-plan）
+  ↓ 规划任务
 workflow-orchestrator
-    ↓ 编排任务队列
+  ↓ 编排任务队列
 local-coder (local_coder_worker.py)
-    ↓ 调用 AI
+  ↓ 调用 AI
 Ollama/qwen2.5-coder:32b
-    ↓ 生成代码
+  ↓ 生成代码
 reviewer/tester workers
-    ↓ 验证结果
+  ↓ 验证结果
 SQLite (.project-ai/workflow_state.db)
-    ↓ 记录状态
+  ↓ 记录状态
+Claude 主 agent
+  ↓ 汇报结果
 ```
 
 ## 核心组件
 
 ### 规划层
 - **claude-plan** - 正式开发模式 wrapper
-- `.project-ai/` - 工作状态目录
+- `.project-ai/` - 工作状态目录（TASK.md、RESULT.md、PATCH.diff、HANDOFF.md）
 
 ### 执行层
-- **local-coder** - 本地 AI 执行器
+- **local-coder** - 本地 AI 执行器（子 agent）
 - **local_coder_worker.py** - Python worker 实现
 
 ### 编排层
@@ -49,15 +68,20 @@ SQLite (.project-ai/workflow_state.db)
 
 ### 运维层
 - **workflow-admin** - 系统维护 CLI
+  - health: 系统健康检查
+  - context: Context window 状态检查
+  - handoff: 生成会话交接文件
+  - resume: 生成新会话恢复命令
 
 ### 验证层
 - **bootstrap-verify** - 安装验证
 - **bootstrap_self_test.py** - 自检脚本
 
 ### Skills
-- **mattpocock/skills** - 第三方 skills
-- **bootstrap-install-skills** - 安装脚本
-- **skill-router** - 自动路由
+- **mattpocock/skills** - 第三方 skills（白名单方式）
+  - 来源: https://github.com/mattpocock/skills
+  - 安装: bootstrap-install-skills
+  - 路由: skill-router
 
 ## 使用模式
 
@@ -185,10 +209,22 @@ workflow-admin health
 1. **模型遵循度** - qwen2.5-coder:32b 偶尔忽略 prompt
 2. **Anchor 精确性** - 需要用户提供精确 anchor
 3. **无人值守** - 不适合高风险自动任务
+4. **Context Window** - 不会自动刷新，需要 session rotation
+5. **大型重构** - 需要人工确认，不建议完全自动化
 
 ## 下一阶段
 
-**oMLX Backend Migration**
+### oMLX Backend Migration
 - 迁移到 Apple Silicon 本地推理
 - 提升模型质量
 - 改善 prompt 遵循度
+
+### Backend Adapter 清理
+- 清理旧的 backend adapter
+- 统一 backend 接口
+- 支持多 backend 切换
+
+### 更强本地 Coder 模型测试
+- 测试 Ollama 其他模型
+- 测试 oMLX 模型
+- Benchmark 对比

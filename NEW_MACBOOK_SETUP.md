@@ -1,6 +1,29 @@
 # New MacBook Setup Guide
 
-Complete setup for claude-plan workflow on a new MacBook.
+Complete setup for **Claude Plan + Local Coder 多 Agent 工作流** on a new MacBook.
+
+## 系统说明
+
+这是一套多 Agent 协作的开发工作流：
+
+- **Claude 主 agent**: 理解需求、规划任务、审查结果、汇报
+- **local-coder 本地子 agent**: 实际代码修改（Ollama + qwen2.5-coder:32b）
+- **workflow-orchestrator**: 任务排队、分配、恢复
+- **reviewer/tester**: 代码审查和测试
+- **SQLite + .project-ai**: 长期记忆和会话恢复
+
+**重要**: Claude 主 agent **不直接写代码**，所有代码修改由 local-coder 本地子 agent 执行。
+
+## 不会备份的内容
+
+⚠️ 这套系统 **不会** 备份以下内容：
+- 密码、API Key、Token
+- macOS Keychain
+- 本地 Ollama 模型（需要重新 pull）
+- oMLX 模型
+- runtime DB、log 文件
+
+你需要自行备份这些敏感信息。
 
 ## Step 1: System Prerequisites
 
@@ -154,6 +177,44 @@ workflow-query stats
 2. Read MACBOOK_RECOVERY.md for detailed documentation
 3. Start using claude-plan for real projects
 
+## 使用方式
+
+### 普通模式
+```bash
+claude
+```
+直接对话，快速原型。
+
+### 正式开发模式
+```bash
+claude-plan
+```
+结构化开发工作流：
+- 创建 `.project-ai/` 工作目录
+- TASK.md（任务定义 + 约束）
+- RESULT.md（执行结果）
+- PATCH.diff（代码变更）
+
+### 健康检查
+```bash
+bootstrap-verify              # 基础验证
+bootstrap-verify --doctor     # 诊断模式
+```
+
+### 系统运维
+```bash
+workflow-admin health          # 系统健康检查
+workflow-admin context         # Context window 状态检查
+workflow-admin handoff         # 生成会话交接文件
+workflow-admin resume          # 生成新会话恢复命令
+```
+
+### 技能路由
+```bash
+skill-router "修复 crawler 登录失败 bug"
+```
+自动选择最合适的 mattpocock skill。
+
 ## Uninstallation
 
 ```bash
@@ -179,11 +240,42 @@ For issues:
 
 For specialized task guidance:
 
+### mattpocock/skills 说明
+
+- **来源**: https://github.com/mattpocock/skills
+- **集成方式**: 白名单方式（不是全量安装）
+- **用途**: planning、diagnosis、TDD、handoff、架构理解
+- **限制**: 不能绕过 local-coder → reviewer → tester pipeline
+
+### 安装
+
 ```bash
 # Install whitelisted mattpocock skills
 bootstrap-install-skills
 
 # Verify installation
+ls ~/.claude/skills/
+
+# Available skills
+echo "diagnose, tdd, handoff, zoom-out, grill-with-docs, to-prd, to-issues, improve-codebase-architecture, git-guardrails-claude-code, setup-matt-pocock-skills"
+```
+
+### 当前白名单
+
+| Skill | 用途 |
+|-------|------|
+| diagnose | 调试和故障诊断 |
+| tdd | 测试驱动开发指导 |
+| handoff | 会话交接和上下文压缩 |
+| zoom-out | 理解代码库架构 |
+| grill-with-docs | 澄清模糊需求 |
+| to-prd | 转换为 PRD 格式 |
+| to-issues | 分解为 issue |
+| improve-codebase-architecture | 代码质量改进 |
+| git-guardrails-claude-code | Git 操作指导 |
+| setup-matt-pocock-skills | 安装 mattpocock skills |
+
+### Using Skills
 ls ~/.claude/skills/
 
 # Available skills

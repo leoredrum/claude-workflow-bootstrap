@@ -1,5 +1,17 @@
 # MacBook New Machine Recovery Checklist
 
+## 系统说明
+
+这是一套 **Claude Plan + Local Coder 多 Agent 工作流**：
+
+- **Claude 主 agent**: 理解需求、规划任务、审查结果、汇报
+- **local-coder 本地子 agent**: 实际代码修改（Ollama + qwen2.5-coder:32b）
+- **workflow-orchestrator**: 任务排队、分配、恢复
+- **reviewer/tester**: 代码审查和测试
+- **SQLite + .project-ai**: 长期记忆和会话恢复
+
+**重要**: Claude 主 agent **不直接写代码**，所有代码修改由 local-coder 本地子 agent 执行。
+
 ## Prerequisites
 
 - macOS 14+ (Sonoma or later)
