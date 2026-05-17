@@ -1,0 +1,125 @@
+#!/bin/bash
+# claude-plan-supervised - Start claude-plan in tmux with context limit monitoring
+
+SESSION_NAME="claude-plan-$$"
+LOG_DIR="$HOME/.claude-workflow/logs/session-supervisor"
+mkdir -p "$LOG_DIR"
+
+# Colors for output
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly RED='\033[0;31m'
+readonly NC='\033[0m' # No Color
+
+# Logging functions
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') $1" | tee -a "$LOG_DIR/supervisor.log"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $(date '+%Y-%m-%d %H:%M:%S') $1" | tee -a "$LOG_DIR/supervisor.log"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $1" | tee -a "$LOG_DIR/supervisor.log"
+}
+
+# Session log file
+SESSION_LOG="$LOG_DIR/session_${SESSION_NAME}_$(date '+%Y%m%d_%H%M%S').log"
+
+log_info "Starting supervised claude-plan session: $SESSION_NAME"
+log_info "Session log: $SESSION_LOG"
+
+# Start tmux session with claude-plan
+tmux new-session -d -s "$SESSION_NAME"
+tmux send-keys -t "$SESSION_NAME" "claude-plan" Enter
+log_info "claude-plan started in tmux session"
+
+# Counter for monitoring iterations
+monitor_iter=0
+
+# Background monitoring loop for context limit errors
+while true; do
+  monitor_iter=$((monitor_iter + 1))
+
+  # Capture tmux output for analysis
+  output=$(tmux capture-pane -p -t "$SESSION_NAME" -S -50 2>/dev/null || echo "")
+
+  # Check if session still exists
+  if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    log_warn "Tmux session $SESSION_NAME ended (monitoring iteration $monitor_iter)"
+    break
+  fi
+
+  # Check for context limit errors (multiple patterns)
+  if echo "$output" | grep -qi "context window limit\|Context length exceeded\|maximum context length\|token limit exceeded\|context limit reached"; then
+    log_error "CONTEXT LIMIT DETECTED (iteration $monitor_iter)"
+    log_info "Capturing output to: $SESSION_LOG"
+    echo "$output" > "$SESSION_LOG"
+
+    # Get current project directory (from tmux session)
+    PROJECT_DIR=$(pwd)
+    PROJECT_AI_DIR="$PROJECT_DIR/.project-ai"
+
+    log_info "Project directory: $PROJECT_DIR"
+    log_info "Starting Auto Handoff protocol..."
+
+    # Step 1: Generate handoff
+    log_info "Step 1: Generating handoff..."
+    if workflow-admin handoff >> "$SESSION_LOG" 2>&1; then
+      log_info "Handoff generated successfully"
+    else
+      log_error "Handoff generation failed (exit code: $?)"
+    fi
+
+    # Step 2: Generate resume prompt
+    log_info "Step 2: Generating resume prompt..."
+    RESUME_FILE="$PROJECT_AI_DIR/RESUME_PROMPT.txt"
+    if workflow-admin resume > "$RESUME_FILE" 2>&1; then
+      log_info "Resume prompt saved to: $RESUME_FILE"
+      # Log resume prompt content
+      echo "=== RESUME PROMPT ===" >> "$SESSION_LOG"
+      cat "$RESUME_FILE" >> "$SESSION_LOG"
+      echo "=== END RESUME PROMPT ===" >> "$SESSION_LOG"
+    else
+      log_error "Resume prompt generation failed (exit code: $?)"
+    fi
+
+    # Step 3: Create snapshot
+    log_info "Step 3: Creating session snapshot..."
+    if workflow-admin snapshot >> "$SESSION_LOG" 2>&1; then
+      log_info "Snapshot created successfully"
+    else
+      log_error "Snapshot creation failed (exit code: $?)"
+    fi
+
+    # Step 4: Notify user
+    log_info "Auto Handoff complete!"
+    log_info "Next steps:"
+    log_info "  1. Review: cat $RESUME_FILE"
+    log_info "  2. Start new session: claude-plan"
+    log_info "  3. Paste resume prompt"
+
+    # Write handoff marker for detection
+    echo "$(date '+%Y-%m-%d %H:%M:%S') AUTO_HANDOFF_TRIGGERED" >> "$LOG_DIR/handoff_events.log"
+
+    # Optional: Pause the tmux session (don't kill it)
+    log_warn "Pausing tmux session (not killing). Use 'tmux attach -t $SESSION_NAME' to review."
+
+    break
+  fi
+
+  # Periodic status log (every 10 minutes)
+  if [ $((monitor_iter % 20)) -eq 0 ]; then
+    log_info "Monitoring active (iteration $monitor_iter, session alive)"
+  fi
+
+  sleep 30
+done
+
+# Final status
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+  log_info "Supervisor exiting. Session still available: tmux attach -t $SESSION_NAME"
+else
+  log_info "Supervisor exiting. Session has ended."
+fi

@@ -1,0 +1,698 @@
+#!/bin/bash
+# session-supervisor - Monitor Claude Code sessions for context limits and auto-handoff
+#
+# USAGE:
+#   session-supervisor                    # Monitor current tmux session
+#   session-supervisor --dry-run          # Simulate detection without action
+#   session-supervisor --session NAME     # Monitor specific tmux session
+#   session-supervisor --daemon           # Run as background daemon
+#   session-supervisor --list             # List supervised sessions
+#   session-supervisor --status           # Show supervisor status
+#   session-supervisor --stop [NAME]      # Stop supervision
+#   session-supervisor --help             # Show this help
+
+set -euo pipefail
+
+# ============================================
+# CONFIGURATION
+# ============================================
+
+readonly SUPERVISOR_DIR="$HOME/.claude-workflow/session-supervisor"
+readonly SUPERVISOR_PID_FILE="$SUPERVISOR_DIR/supervisor.pid"
+readonly SUPERVISOR_LOG_DIR="$SUPERVISOR_DIR/logs"
+readonly SESSIONS_FILE="$SUPERVISOR_DIR/sessions.json"
+
+# Error patterns to monitor for
+readonly ERROR_PATTERNS=(
+    "context window limit"
+    "Context length exceeded"
+    "maximum context length"
+    "too long"
+    "context limit reached"
+)
+
+# Colors for output
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly CYAN='\033[0;36m'
+readonly NC='\033[0m' # No Color
+
+# ============================================
+# UTILITY FUNCTIONS
+# ============================================
+
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+log_debug() {
+    if [[ "${DEBUG:-0}" == "1" ]]; then
+        echo -e "${CYAN}[DEBUG]${NC} $1" >&2
+    fi
+}
+
+# Create supervisor directory structure
+setup_supervisor_dir() {
+    mkdir -p "$SUPERVISOR_DIR"
+    mkdir -p "$SUPERVISOR_LOG_DIR"
+    touch "$SESSIONS_FILE"
+}
+
+# Check if workflow-admin is available
+check_workflow_admin() {
+    if ! command -v workflow-admin &> /dev/null; then
+        log_error "workflow-admin not found in PATH"
+        return 1
+    fi
+    return 0
+}
+
+# ============================================
+# SESSION DETECTION
+# ============================================
+
+# Find Claude Code tmux sessions
+find_claude_sessions() {
+    tmux list-sessions -F "#{session_name}" 2>/dev/null | grep -E "^(claude|session-)" || true
+}
+
+# Get current tmux session (if inside tmux)
+get_current_session() {
+    if [[ -n "${TMUX:-}" ]]; then
+        tmux display-message -p "#{session_name}"
+    fi
+}
+
+# Check if session exists
+session_exists() {
+    local session_name="$1"
+    tmux list-sessions -F "#{session_name}" 2>/dev/null | grep -qx "$session_name"
+}
+
+# ============================================
+# ERROR DETECTION
+# ============================================
+
+# Capture and check session output for errors
+check_session_errors() {
+    local session_name="$1"
+    local capture_lines="${2:-100}"
+
+    if ! session_exists "$session_name"; then
+        log_debug "Session $session_name no longer exists"
+        return 1
+    fi
+
+    # Capture last N lines from the session
+    local output
+    output=$(tmux capture-pane -p -t "$session_name" -S -"$capture_lines" 2>/dev/null || true)
+
+    if [[ -z "$output" ]]; then
+        log_debug "No output captured from $session_name"
+        return 1
+    fi
+
+    # Check for each error pattern
+    for pattern in "${ERROR_PATTERNS[@]}"; do
+        if echo "$output" | grep -qiE "$pattern"; then
+            log_debug "Detected error pattern: $pattern"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# Get matching error lines for reporting
+get_error_lines() {
+    local session_name="$1"
+    local capture_lines="${2:-100}"
+
+    local output
+    output=$(tmux capture-pane -p -t "$session_name" -S -"$capture_lines" 2>/dev/null || true)
+
+    for pattern in "${ERROR_PATTERNS[@]}"; do
+        echo "$output" | grep -iE "$pattern" || true
+    done
+}
+
+# ============================================
+# AUTO RESTART PROTOCOL
+# ============================================
+
+# Execute auto restart after handoff
+do_auto_restart() {
+    local session_name="$1"
+    local dry_run="${2:-0}"
+
+    if [[ "$dry_run" == "1" ]]; then
+        log_info "[DRY-RUN] Would execute auto restart protocol"
+        log_info "[DRY-RUN] 1. Stop old tmux session: $session_name"
+        log_info "[DRY-RUN] 2. Start new claude-plan session"
+        log_info "[DRY-RUN] 3. Display paste instructions"
+        return 0
+    fi
+
+    log_info "Executing auto restart protocol..."
+
+    # Step 1: Stop old tmux session
+    log_info "1. Stopping old tmux session: $session_name"
+    if session_exists "$session_name"; then
+        tmux kill-session -t "$session_name" 2>/dev/null || {
+            log_warn "   Failed to kill session (may have already ended)"
+        }
+        log_info "   Old session stopped"
+    else
+        log_warn "   Session already ended"
+    fi
+
+    # Step 2: Start new claude-plan session
+    log_info "2. Starting new claude-plan session..."
+    local new_session_name="claude-plan-$$"
+
+    if tmux new-session -d -s "$new_session_name" "claude-plan"; then
+        log_info "   New session started: $new_session_name"
+    else
+        log_error "   Failed to start new claude-plan session"
+        log_info "   Please start manually with: claude-plan"
+        return 1
+    fi
+
+    # Step 3: Display instructions
+    log_info ""
+    log_info "=========================================="
+    log_info "AUTO RESTART COMPLETE"
+    log_info "=========================================="
+    log_info "New session: $new_session_name"
+    log_info ""
+    log_info "To continue your work:"
+    log_info "  1. Attach to session: tmux attach -t $new_session_name"
+    log_info "  2. Paste the content of: .project-ai/RESUME_PROMPT.txt"
+    log_info ""
+    log_info "Quick paste command:"
+    log_info "  cat .project-ai/RESUME_PROMPT.txt | pbcopy && tmux attach -t $new_session_name"
+    log_info "=========================================="
+
+    # Log restart event
+    local log_file="$SUPERVISOR_LOG_DIR/restart_$(date +%Y%m%d_%H%M%S).log"
+    {
+        echo "Auto restart triggered at: $(date)"
+        echo "Old session: $session_name"
+        echo "New session: $new_session_name"
+        echo "Working directory: $(pwd)"
+    } > "$log_file"
+
+    log_debug "Restart logged to: $log_file"
+
+    return 0
+}
+
+# ============================================
+# HANDOFF PROTOCOL
+# ============================================
+
+# Execute handoff protocol
+do_handoff() {
+    local session_name="$1"
+    local dry_run="${2:-0}"
+
+    log_warn "Context limit detected in session: $session_name"
+
+    if [[ "$dry_run" == "1" ]]; then
+        log_info "[DRY-RUN] Would execute handoff protocol"
+        log_info "[DRY-RUN] 1. workflow-admin handoff"
+        log_info "[DRY-RUN] 2. workflow-admin resume > .project-ai/RESUME_PROMPT.txt"
+        return 0
+    fi
+
+    # Check we're in a project directory
+    if [[ ! -d ".project-ai" ]]; then
+        log_error "Not in a project directory (no .project-ai found)"
+        return 1
+    fi
+
+    # Check workflow-admin availability
+    if ! check_workflow_admin; then
+        log_error "Cannot execute handoff: workflow-admin not available"
+        return 1
+    fi
+
+    log_info "Executing handoff protocol..."
+
+    # Step 1: Generate handoff
+    log_info "1. Generating session handoff..."
+    if workflow-admin handoff; then
+        log_info "   Handoff created"
+    else
+        log_error "   Failed to create handoff"
+        return 1
+    fi
+
+    # Step 2: Generate resume prompt
+    log_info "2. Generating resume prompt..."
+    if workflow-admin resume > .project-ai/RESUME_PROMPT.txt 2>&1; then
+        log_info "   Resume prompt saved to .project-ai/RESUME_PROMPT.txt"
+    else
+        log_warn "   Failed to create resume prompt"
+    fi
+
+    # Step 3: Notify user
+    log_info ""
+    log_info "=========================================="
+    log_info "HANDOFF COMPLETE"
+    log_info "=========================================="
+    log_info "Session: $session_name"
+    log_info "Handoff: .project-ai/SESSION_HANDOFF.md"
+    log_info "Resume:  .project-ai/RESUME_PROMPT.txt"
+    log_info ""
+    log_info "Next steps:"
+    log_info "  1. Review the handoff files"
+    log_info "  2. Start a new claude-plan session"
+    log_info "  3. Paste the resume prompt"
+    log_info "=========================================="
+
+    # Log to supervisor log
+    local log_file="$SUPERVISOR_LOG_DIR/handoff_$(date +%Y%m%d_%H%M%S).log"
+    {
+        echo "Handoff triggered at: $(date)"
+        echo "Session: $session_name"
+        echo "Working directory: $(pwd)"
+        echo ""
+        echo "Error output:"
+        get_error_lines "$session_name"
+    } > "$log_file"
+
+    log_debug "Handoff logged to: $log_file"
+
+    return 0
+}
+
+# ============================================
+# MONITORING LOOP
+# ============================================
+
+# Monitor a session for errors
+monitor_session() {
+    local session_name="$1"
+    local dry_run="${2:-0}"
+    local check_interval="${3:-30}"
+    local max_checks="${4:-0}"  # 0 = infinite
+
+    local check_count=0
+
+    log_info "Starting supervision of session: $session_name"
+    log_info "Check interval: ${check_interval}s"
+    if [[ "$dry_run" == "1" ]]; then
+        log_warn "DRY-RUN mode: No actions will be taken"
+    fi
+
+    # Register session
+    register_session "$session_name" "$$"
+
+    trap 'unregister_session "$session_name"; exit 0' TERM INT
+
+    while true; do
+        ((check_count++))
+
+        if [[ "$max_checks" -gt 0 ]] && [[ "$check_count" -ge "$max_checks" ]]; then
+            log_info "Max checks reached ($max_checks)"
+            break
+        fi
+
+        # Check if session still exists
+        if ! session_exists "$session_name"; then
+            log_warn "Session $session_name ended"
+            break
+        fi
+
+        # Check for errors
+        if check_session_errors "$session_name"; then
+            do_handoff "$session_name" "$dry_run"
+            if [[ "$dry_run" != "1" ]]; then
+                # After successful handoff, execute auto-restart
+                do_auto_restart "$session_name" "$dry_run"
+                # Stop monitoring after restart
+                break
+            fi
+        fi
+
+        log_debug "Check #$check_count: No errors detected"
+
+        # Wait before next check
+        sleep "$check_interval"
+    done
+
+    unregister_session "$session_name"
+    log_info "Supervision ended for session: $session_name"
+}
+
+# ============================================
+# SESSION MANAGEMENT
+# ============================================
+
+# Register a supervised session
+register_session() {
+    local session_name="$1"
+    local pid="$2"
+
+    # Create sessions file if doesn't exist
+    if [[ ! -f "$SESSIONS_FILE" ]]; then
+        echo "{}" > "$SESSIONS_FILE"
+    fi
+
+    # Use jq if available, otherwise simple append
+    if command -v jq &> /dev/null; then
+        local tmp_file
+        tmp_file=$(mktemp)
+        jq --arg s "$session_name" --arg p "$pid" '.[$s] = {"pid": $p, "started": now}' "$SESSIONS_FILE" > "$tmp_file"
+        mv "$tmp_file" "$SESSIONS_FILE"
+    else
+        # Simple append (not atomic but works for basic use)
+        echo "{\"session\": \"$session_name\", \"pid\": $pid}" >> "$SESSIONS_FILE".log
+    fi
+
+    # Save PID for cleanup
+    echo "$pid" > "$SUPERVISOR_DIR/${session_name}.pid"
+}
+
+# Unregister a supervised session
+unregister_session() {
+    local session_name="$1"
+
+    rm -f "$SUPERVISOR_DIR/${session_name}.pid"
+
+    if command -v jq &> /dev/null; then
+        local tmp_file
+        tmp_file=$(mktemp)
+        jq --arg s "$session_name" 'del .[$s]' "$SESSIONS_FILE" > "$tmp_file" 2>/dev/null || true
+        mv "$tmp_file" "$SESSIONS_FILE" 2>/dev/null || true
+    fi
+}
+
+# List supervised sessions
+list_sessions() {
+    if [[ ! -f "$SESSIONS_FILE" ]]; then
+        log_info "No supervised sessions"
+        return 0
+    fi
+
+    echo "Supervised Sessions:"
+    echo "===================="
+
+    for pid_file in "$SUPERVISOR_DIR"/*.pid; do
+        if [[ -f "$pid_file" ]]; then
+            local session_name
+            session_name=$(basename "$pid_file" .pid)
+            local pid
+            pid=$(cat "$pid_file")
+
+            if kill -0 "$pid" 2>/dev/null; then
+                echo -e "  ${GREEN}*${NC} $session_name (PID: $pid)"
+            else
+                echo -e "  ${RED}x${NC} $session_name (dead - PID: $pid)"
+            fi
+        fi
+    done
+}
+
+# Stop supervising a session
+stop_supervision() {
+    local session_name="$1"
+
+    local pid_file="$SUPERVISOR_DIR/${session_name}.pid"
+
+    if [[ ! -f "$pid_file" ]]; then
+        log_error "No supervision found for session: $session_name"
+        return 1
+    fi
+
+    local pid
+    pid=$(cat "$pid_file")
+
+    if kill -0 "$pid" 2>/dev/null; then
+        log_info "Stopping supervision of $session_name (PID: $pid)"
+        kill "$pid"
+        rm -f "$pid_file"
+        log_info "Supervision stopped"
+    else
+        log_warn "Supervision process already dead"
+        rm -f "$pid_file"
+    fi
+}
+
+# Show supervisor status
+show_status() {
+    echo "Session Supervisor Status"
+    echo "========================"
+    echo ""
+    echo "Directory: $SUPERVISOR_DIR"
+    echo "Sessions file: $SESSIONS_FILE"
+    echo "Log directory: $SUPERVISOR_LOG_DIR"
+    echo ""
+
+    # Count log entries
+    if [[ -d "$SUPERVISOR_LOG_DIR" ]]; then
+        local handoff_count
+        handoff_count=$(ls -1 "$SUPERVISOR_LOG_DIR"/handoff_*.log 2>/dev/null | wc -l)
+        echo "Handoffs triggered: $handoff_count"
+    fi
+
+    echo ""
+    list_sessions
+}
+
+# ============================================
+# DAEMON MODE
+# ============================================
+
+# Run as daemon (background process with auto-session detection)
+daemon_mode() {
+    local dry_run="${1:-0}"
+
+    log_info "Starting session supervisor daemon..."
+
+    # Find existing Claude sessions
+    local sessions
+    sessions=$(find_claude_sessions)
+
+    if [[ -z "$sessions" ]]; then
+        log_warn "No Claude sessions found to supervise"
+        log_info "Will monitor for new sessions..."
+
+        # Monitor for new sessions
+        while true; do
+            sessions=$(find_claude_sessions)
+            if [[ -n "$sessions" ]]; then
+                log_info "Found new session(s):"
+                echo "$sessions" | while read -r session; do
+                    log_info "  - $session"
+                done
+
+                # Start monitoring first session
+                local first_session
+                first_session=$(echo "$sessions" | head -n1)
+                monitor_session "$first_session" "$dry_run"
+                break
+            fi
+            sleep 10
+        done
+    else
+        # Monitor first found session
+        local first_session
+        first_session=$(echo "$sessions" | head -n1)
+        monitor_session "$first_session" "$dry_run"
+    fi
+}
+
+# ============================================
+# MAIN COMMANDS
+# ============================================
+
+show_help() {
+    cat <<'EOF'
+Session Supervisor - Monitor Claude Code sessions for context limits
+
+USAGE:
+  session-supervisor [OPTIONS]
+
+COMMANDS:
+  (no args)              Monitor current tmux session or first Claude session
+  --session NAME         Monitor specific tmux session
+  --dry-run              Simulate detection without taking actions
+  --daemon               Run as background daemon (auto-detect sessions)
+  --list                 List all supervised sessions
+  --status               Show supervisor status and statistics
+  --stop [NAME]          Stop supervision (specific session or all)
+  --help                 Show this help message
+
+EXAMPLES:
+  # Monitor current session
+  session-supervisor
+
+  # Dry run to test detection
+  session-supervisor --dry-run
+
+  # Monitor specific session
+  session-supervisor --session my-session
+
+  # Run as daemon
+  session-supervisor --daemon
+
+  # Check status
+  session-supervisor --status
+
+  # List supervised sessions
+  session-supervisor --list
+
+  # Stop supervising specific session
+  session-supervisor --stop my-session
+
+  # Stop all supervision
+  session-supervisor --stop
+
+ERROR DETECTION:
+The supervisor monitors for these error patterns:
+  - "context window limit"
+  - "Context length exceeded"
+  - "maximum context length"
+  - "too long"
+  - "context limit reached"
+
+HANDOFF PROTOCOL:
+When an error is detected, the supervisor:
+  1. Runs "workflow-admin handoff"
+  2. Runs "workflow-admin resume > .project-ai/RESUME_PROMPT.txt"
+  3. Stops the old tmux session
+  4. Starts a new claude-plan session
+  5. Displays instructions to paste RESUME_PROMPT.txt
+  6. Logs the handoff to ~/.claude-workflow/session-supervisor/logs/
+
+FILES:
+  ~/.claude-workflow/session-supervisor/sessions.json  Active sessions
+  ~/.claude-workflow/session-supervisor/logs/          Handoff/restart logs
+  .project-ai/SESSION_HANDOFF.md                       Handoff content
+  .project-ai/RESUME_PROMPT.txt                        Resume prompt
+
+ENVIRONMENT:
+  DEBUG=1                  Enable debug output
+EOF
+}
+
+# ============================================
+# MAIN ENTRY POINT
+# ============================================
+
+main() {
+    setup_supervisor_dir
+
+    local action="monitor"
+    local target_session=""
+    local dry_run=0
+    local daemon_mode=0
+    local check_interval=30
+    local max_checks=0
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            --dry-run)
+                dry_run=1
+                shift
+                ;;
+            --session)
+                target_session="$2"
+                shift 2
+                ;;
+            --daemon)
+                daemon_mode=1
+                shift
+                ;;
+            --list)
+                list_sessions
+                exit 0
+                ;;
+            --status)
+                show_status
+                exit 0
+                ;;
+            --stop)
+                action="stop"
+                if [[ -n "${2:-}" ]] && [[ ! "$2" =~ ^-- ]]; then
+                    target_session="$2"
+                    shift
+                fi
+                shift
+                ;;
+            --interval)
+                check_interval="$2"
+                shift 2
+                ;;
+            --max-checks)
+                max_checks="$2"
+                shift 2
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+
+    # Execute action
+    case "$action" in
+        monitor)
+            if [[ "$daemon_mode" == "1" ]]; then
+                daemon_mode "$dry_run"
+            else
+                # Determine session to monitor
+                if [[ -z "$target_session" ]]; then
+                    target_session=$(get_current_session)
+                    if [[ -z "$target_session" ]]; then
+                        # Try to find any Claude session
+                        target_session=$(find_claude_sessions | head -n1)
+                        if [[ -z "$target_session" ]]; then
+                            log_error "No tmux session found. Are you in tmux?"
+                            log_info "Hint: Start with 'claude-plan' or specify --session NAME"
+                            exit 1
+                        fi
+                    fi
+                fi
+
+                monitor_session "$target_session" "$dry_run" "$check_interval" "$max_checks"
+            fi
+            ;;
+        stop)
+            if [[ -n "$target_session" ]]; then
+                stop_supervision "$target_session"
+            else
+                # Stop all supervised sessions
+                for pid_file in "$SUPERVISOR_DIR"/*.pid; do
+                    if [[ -f "$pid_file" ]]; then
+                        local session_name
+                        session_name=$(basename "$pid_file" .pid)
+                        stop_supervision "$session_name"
+                    fi
+                done
+                log_info "All supervision stopped"
+            fi
+            ;;
+    esac
+}
+
+# Run main
+main "$@"

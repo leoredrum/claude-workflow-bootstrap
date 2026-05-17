@@ -92,13 +92,33 @@ claude
 直接对话，快速原型。
 
 ### 2. 正式开发模式
+
+#### claude-plan（普通正式开发）
 ```bash
 claude-plan
 ```
-结构化工作流：
+标准结构化工作流：
 - TASK.md（任务定义 + 约束）
 - RESULT.md（执行结果）
 - PATCH.diff（代码变更）
+- **需手动处理会话轮换和交接**
+
+#### claude-plan-supervised（自动监控模式）
+```bash
+claude-plan-supervised
+```
+带自动监控的结构化工作流：
+- 包含 claude-plan 的所有能力
+- **自动监控会话健康状态**
+- **自动生成 HANDOFF.md 交接文件**
+- **自动生成新会话恢复命令**
+- supervisor + handoff + resume 近似自动续接
+
+**重要说明**：
+- 当前仍不是官方无缝续接
+- 是 supervisor + handoff + resume 的近似自动续接
+- 会话轮换时仍需手动启动新会话并粘贴 resume 命令
+- 目标是逐步接近真正的自动续接体验
 
 ## 当前 Backend
 
