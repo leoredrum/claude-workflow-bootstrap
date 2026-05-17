@@ -1,121 +1,142 @@
-# claude-workflow-bootstrap
+# Claude Plan + Local Coder Workflow Bootstrap
 
-一套跨 AI / 跨设备的 Claude (及任何 AI 编程工具) 工作流复刻包。**目的**: 让我在任何新电脑上花 5 分钟就能复刻同样的"提计划→GitHub 自动建 repo→任何 AI 接棒"工作流。
+**Leo 的完整 coding workflow 一键恢复包。**
 
-## 含什么
+在一台新 MacBook 上花 5 分钟就能恢复完整的结构化开发工作流：
+- claude-plan（正式开发模式）
+- local-coder（本地 AI 执行器）
+- workflow-orchestrator（工作流编排）
+- workflow-query（状态查询）
+- workflow-admin（系统运维）
+- SQLite workflow state
+- mattpocock skills integration
+
+## 当前架构
+
+**主 agent + 本地子 agent 模式**
 
 ```
-claude-workflow-bootstrap/
-├── PROMPT.md              # ⭐ 给新机器 AI 的提示词 (主入口)
-├── bootstrap.sh           # 一键 setup 脚本
-├── README.md              # 本文件
-├── templates/             # 项目 scaffold 模板 (AGENTS.md / spec.md / handoff.md / README.md / gitignore)
-└── bin/
-    └── ai-project-init.sh # `ai-project-init <repo> "<目标>"` scaffold 命令
+Claude Planner
+    ↓
+workflow-orchestrator
+    ↓
+local-coder → Ollama/qwen2.5-coder:32b
+    ↓
+reviewer/tester
+    ↓
+SQLite/.project-ai
 ```
 
-## 在新机器复刻
+**当前 backend:** Ollama + qwen2.5-coder:32b（本地、离线可用）
 
-### 一行命令 (推荐)
+**未接入:** oMLX（下一阶段）
 
-需要 macOS + Homebrew + git (Xcode CLT). repo 必须 public 才能无认证 clone:
+## 核心能力
+
+### 约束系统
+- `allowed_files` - 限制只能修改指定文件
+- `forbidden_new_files` - 禁止创建新文件
+
+### Edit Commands
+- `replace_text` - 精确文本替换
+- `insert_after` - anchor 后插入
+- `insert_before` - anchor 前插入
+
+### 安全保护
+- Anchor 验证（不存在/多次匹配 → BLOCKED）
+- 大文件覆盖保护（>200 行 → BLOCKED）
+- Loop detection
+- 违规记录
+
+## 新机器一键安装
+
+### 一行命令（推荐）
+
+需要 macOS + Homebrew + git：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/leoredrum/claude-workflow-bootstrap/main/install.sh | bash
 ```
 
-跑完后再 `gh auth login` 走浏览器一次, 就齐了。
-
-### 验证安装
-
-运行以下命令确认所有工具正常:
+### 手动安装
 
 ```bash
-# GitHub CLI 验证
-gh auth status                    # 应返回: ✓ Logged in as <你的用户名>
-
-# 项目工具验证
-ai-project-init                   # 应返回用法说明
-claude-plan                       # 应返回用法说明 (规划工具)
-local-coder                       # 应返回用法说明 (本地编码工具)
-get-secret                        # 应返回用法说明 (密钥管理工具)
-workflow-admin                    # 应返回用法说明 (运维工具)
-
-# 完整安装验证
-bootstrap-verify                  # 运行完整验证检查
-```
-
-如果任何检查失败,运行诊断模式:
-
-```bash
-bootstrap-verify --doctor         # 诊断模式 - 查找问题
-```
-
-验证报告将保存为 `bootstrap-verification-report.md` 在当前目录。
-
-### 让 AI 帮跑
-
-把 [`PROMPT.md`](PROMPT.md) 整段贴给新机器的 AI, 让它跑 setup + 给你核对清单。
-
-### 手动逐步
-
-```bash
-# 1. 安装 GitHub CLI
-brew install gh
-
-# 2. Clone 仓库
+# 1. Clone repo
 git clone https://github.com/leoredrum/claude-workflow-bootstrap.git ~/claude-workflow-bootstrap
 
-# 3. 运行 bootstrap 脚本
-cd ~/claude-workflow-bootstrap && bash bootstrap.sh
+# 2. 运行安装
+cd ~/claude-workflow-bootstrap && ./install.sh
 
-# 4. GitHub 认证 (一次性)
-gh auth login
-
-# 5. 验证安装
-gh auth status                    # 应返回: ✓ Logged in as <你的用户名>
-ai-project-init                   # 应返回用法说明
-claude-plan                       # 应返回用法说明 (规划工具)
-local-coder                       # 应返回用法说明 (本地编码工具)
-get-secret                        # 应返回用法说明 (密钥管理工具)
+# 3. 验证安装
+bootstrap-verify
 ```
 
-## Claude vs Claude-plan
+## 使用方式
 
-- **claude** → 主命令 (日常交互、编程)
-  - 直接对话式编程
-  - 快速原型开发
-  - 代码重构和调试
-  - 文件操作和 Git 管理
-
-- **claude-plan** → 规划工具 (项目规划、架构设计、任务分解)
-  - 正式开发模式
-  - 自动创建 `.project-ai/` 工作目录
-  - 结构化项目规划
-  - 任务分解和依赖管理
-  - 架构设计文档生成
-
-## Secret 管理规则
-
-⚠️ **安全第一**: 永远不要把以下内容写进 git (代码/文档/commit msg 都不行):
-- Cookie / 密码 / Token / 真实凭证
-- API Keys / Access Tokens / Session IDs
-- 私人配置 / 环境变量 / 凭证文件
-
-**推荐做法**:
+### 普通模式
 ```bash
-# 使用 get-secret 从 macOS Keychain 读取敏感信息
-get-secret <service-name> <account-name>
-
-# 例如: 获取 GitHub Token
-get-secret github api-token
+claude
 ```
+直接对话式编程、快速原型、代码重构。
+
+### 正式开发模式
+```bash
+claude-plan
+```
+结构化开发工作流：
+- 创建 `.project-ai/` 工作目录
+- 任务分解和约束定义
+- local-coder 执行实现
+- 约束验证和违规记录
+
+### 健康检查
+```bash
+bootstrap-verify              # 基础验证
+bootstrap-verify --doctor     # 诊断模式
+```
+
+### 系统运维
+```bash
+workflow-admin health          # 系统健康检查
+workflow-admin metrics         # 统计指标
+workflow-admin failures        # 失败分析
+workflow-admin compact         # 数据压缩
+workflow-admin stuck-workers   # 卡住的 workers
+workflow-admin clean           # 清理临时文件
+```
+
+### Skill 路由
+```bash
+skill-router "如何优化 Python 性能"
+```
+自动选择最合适的 mattpocock skill。
+
+## 验收记录
+
+| 功能 | 状态 | 日期 |
+|------|------|------|
+| target-file constraints | ✅ PASS | 2026-05-17 |
+| edit-mode commands | ✅ PASS | 2026-05-17 |
+| crawler --verbose 真实任务 | ✅ PASS | 2026-05-17 |
+| workflow-admin | ✅ PASS | 2026-05-17 |
+
+## 限制
+
+1. **不是 oMLX** - 当前使用 Ollama + qwen2.5-coder:32b
+2. **不适合无人值守高风险任务** - 需要人工审核
+3. **本地模型遵循度** - anchor 精确性仍有瓶颈
+
+## 下一阶段
+
+**oMLX Backend Migration**
+- 迁移到 Apple Silicon 本地推理
+- 提升模型质量
+- 改善 prompt 遵循度
 
 ## 故障排除
 
 ### claude-plan not found
 ```bash
-# 确保 ~/bin 在 PATH 中
 export PATH="$HOME/bin:$PATH"
 echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
@@ -123,218 +144,33 @@ source ~/.zshrc
 
 ### local-coder fails
 ```bash
-# 检查 Ollama 是否运行
+# 检查 Ollama
 ollama serve
 
-# 验证模型是否可用
+# 验证模型
 ollama list | grep qwen
 ```
 
 ### 验证失败
-运行诊断模式来识别具体问题:
 ```bash
 bootstrap-verify --doctor
 ```
 
-## workflow-admin - 系统运维
-
-`workflow-admin` 提供日常维护命令，用于检查系统健康状态和清理临时文件。
-
-### 健康检查
-
-```bash
-workflow-admin health
-```
-
-检查：
-- 核心二进制文件是否存在
-- Ollama 后端是否可用
-- qwen2.5-coder:32b 模型是否存在
-- 最近的工作流违规
-- Worker 状态
-
-### 指标统计
-
-```bash
-workflow-admin metrics
-```
-
-显示：
-- 最近 7 天的任务统计
-- 尝试执行统计（PASS/FAILED/BLOCKED）
-- Patch 大小统计
-- 最常修改的文件
-
-### 失败分析
-
-```bash
-workflow-admin failures
-```
-
-分类显示失败类型：
-- WRONG_TARGET_FILE
-- BAD_ANCHOR
-- UNSAFE_OVERWRITE
-- LOOP_DETECTED
-
-### 数据压缩
-
-```bash
-# 预览压缩操作
-workflow-admin compact --dry-run
-
-# 实际压缩
-workflow-admin compact
-```
-
-压缩：
-- ATTEMPT_HISTORY.md
-- workflow_state.db
-
-### Worker 检查
-
-```bash
-workflow-admin stuck-workers
-```
-
-显示卡住的 worker，提供清理命令。
-
-### 临时文件清理
-
-```bash
-# 预览（默认）
-workflow-admin clean
-
-# 实际清理
-workflow-admin clean --apply
-```
-
-清理：
-- /tmp/edit-mode-test*
-- /tmp/*workflow-test*
-- 旧的 /tmp/.claude-* 临时目录
-
 ## 设计取舍
 
-- **Memory 不放 repo**: `~/.claude/projects/-Users-<你>/memory/` 是 Claude 私人偏好, 跨机器同步靠 `scp/rsync` 手动一次性, 不进 git (避免敏感信息泄漏 + 多机不同 Claude session 互相覆盖)
-- **gh 用 SSH protocol**: 已有 GitHub SSH key 的机器零成本; 没 key 的临时切 HTTPS + PAT, 一次后转 SSH
-- **bootstrap.sh 幂等**: 已存在文件不覆盖, 重复跑无副作用
-- **不动 ~/.zshrc**: 假设 `~/bin` 在 PATH, 不行就靠 `/usr/local/bin/` symlink 兜底
+- **Memory 不放 repo** - 个人偏好，手动同步
+- **gh 用 SSH protocol** - 零成本复用现有 key
+- **bootstrap.sh 幂等** - 重复跑无副作用
+- **不动 ~/.zshrc** - 假设 ~/bin 在 PATH
 
 ## 升级
 
-修了 templates 或 bin/ 之后:
-```
-git add -A && git commit -m "feat: <改动描述>" && git push
-```
-
-新机器拉新 setup:
-```
-cd ~/claude-workflow-bootstrap && git pull && bash bootstrap.sh
-```
-
-bootstrap.sh 不会覆盖已存在文件 — 想强刷模板, 删掉 `~/.claude/ai-project-templates/` 再跑一遍。
-
-## Pilot Testing
-
-### Production Pilot Program (2025-05-17)
-
-This project participated in a production pilot to validate the claude-plan workflow across multiple real projects:
-
-**Projects Tested:**
-1. crawler-workspace - Documentation enhancements
-2. imagecreator-workspace - Documentation metadata additions
-3. claude-workflow-bootstrap - README pilot section
-
-**Pilot Results:**
-- 9/9 tasks completed successfully (100% success rate)
-- All tasks were low-risk documentation additions
-- Zero unsafe write blocks
-- Zero workflow violations
-
-**Key Findings:**
-- Direct execution mode works reliably for simple tasks
-- Documentation changes are safe and predictable
-- Version tracking in markdown files improves maintainability
-
-## Skills Integration
-
-This bootstrap includes whitelisted skills from [mattpocock/skills](https://github.com/mattpocock/skills) for specialized task guidance.
-
-### Installing Skills
-
 ```bash
-# Install whitelisted skills after bootstrap installation
-bootstrap-install-skills
-
-# Update skills from upstream
-bootstrap-update-skills
-
-# Dry-run to see what would be installed
-bootstrap-install-skills --dry-run
+cd ~/claude-workflow-bootstrap
+git pull
+./install.sh
 ```
 
-### Whitelisted Skills
+## License
 
-The following skills are approved for installation:
-
-| Skill | Purpose |
-|-------|---------|
-| diagnose | Debug and troubleshoot issues |
-| tdd | Test-driven development guidance |
-| handoff | Session handoff and context compression |
-| zoom-out | Understand codebase architecture |
-| grill-with-docs | Clarify ambiguous requirements |
-| to-prd | Convert requirements to PRD format |
-| to-issues | Break down tasks into issues |
-| improve-codebase-architecture | Code quality improvements |
-| git-guardrails-claude-code | Git operation guidance |
-
-### Excluded Skills
-
-The following skills are intentionally excluded:
-
-- **prototype** - Not aligned with workflow-first approach
-- **triage** - Covered by diagnose skill
-- **caveman** - Not compatible with structured workflow
-- **write-a-skill** - Out of scope for bootstrap
-- **migrate-to-shoehorn** - Deprecated framework
-- **scaffold-exercises** - Educational, not production
-- **setup-pre-commit** - Can be added manually if needed
-- All skills in: deprecated, in-progress, personal
-
-### Skill Auto-Routing
-
-Use the skill-router to automatically select the appropriate skill:
-
-```bash
-skill-router "fix the login crash"
-# Suggests: /diagnose
-
-skill-router "add unit tests for auth module"
-# Suggests: /tdd
-
-skill-router "clean up the messy codebase"
-# Suggests: /improve-codebase-architecture
-```
-
-### Using Skills with Claude
-
-In Claude Code, invoke skills directly:
-
-```
-User: /diagnose "The crawler is failing with timeout error"
-
-Claude: [Analyzes codebase, identifies timeout issue, suggests fix via local-coder]
-```
-
-### Skill Workflow Integration
-
-Skills integrate with claude-plan workflow:
-
-1. **Planning Phase** - Skills help analyze and plan
-2. **Implementation Phase** - local-coder executes the changes
-3. **Review Phase** - Reviewer worker validates changes
-4. **Testing Phase** - Tester worker runs tests
-
-Skills never bypass the local-coder pipeline.
+MIT
