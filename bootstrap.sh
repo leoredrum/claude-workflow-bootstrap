@@ -61,7 +61,16 @@ if [[ ! -e /usr/local/bin/ai-project-init ]]; then
     fi
 fi
 
-# 3.5 local-coder (optional, requires ollama)
+# 3.5 workflow-admin + dependencies
+for script in workflow-admin workflow_db.py workflow_orchestrator.py workflow_query.py; do
+    if [[ ! -e "$HOME/bin/$script" ]]; then
+        cp "files/bin/$script" "$HOME/bin/"
+        chmod +x "$HOME/bin/$script" 2>/dev/null || true
+        echo "→ 装好 ~/bin/$script"
+    fi
+done
+
+# 3.6 local-coder (optional, requires ollama)
 if [[ ! -e "$HOME/AI/local-coder" ]]; then
     echo "→ local-coder not installed (requires ollama)"
     echo "  To install: git clone https://github.com/leoredrum/local-coder.git ~/AI/local-coder"
