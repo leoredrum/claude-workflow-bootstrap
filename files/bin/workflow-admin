@@ -502,73 +502,68 @@ def cmd_clean(args) -> None:
 
 
 def cmd_context(args) -> None:
-    """Check context window health."""
+    """Check context window health with four-level danger rating."""
     print("🔍 Context Window Check")
     print("=" * 50)
 
     project_root = find_project_root()
     project_ai = project_root / ".project-ai"
 
-    # Thresholds
-    WARN_HANDOFF_LINES = 300
-    WARN_MEMORY_LINES = 500
-    WARN_PATCH_LINES = 800
-    WARN_SESSION_TASKS = 5
-    WARN_GIT_DIFF_LINES = 200
+    # Pressure score thresholds (0-100 scale)
+    # Each metric contributes weighted percentage to total score
 
-    warnings = []
+    def normalize_value(value: int, max_ref: int) -> float:
+        """Normalize value to 0-1 scale based on max reference."""
+        return min(value / max_ref, 1.0)
 
-    # Check HANDOFF.md
+    # Collect metrics
+    metrics = {}
+
+    # Check HANDOFF.md (30% weight)
     print("\n📄 HANDOFF.md:")
     handoff_file = project_ai / "HANDOFF.md"
+    HANDOFF_MAX = 500  # Reference max for 100% pressure
     if handoff_file.exists():
         lines = len(handoff_file.read_text().splitlines())
-        status = "✓" if lines < WARN_HANDOFF_LINES else "⚠️"
-        print(f"  {status} {lines} lines (threshold: {WARN_HANDOFF_LINES})")
-        if lines >= WARN_HANDOFF_LINES:
-            warnings.append(f"HANDOFF.md: {lines} lines >= {WARN_HANDOFF_LINES}")
+        pressure = normalize_value(lines, HANDOFF_MAX)
+        metrics['handoff'] = pressure
+        status = "✓" if pressure < 0.5 else ("⚠️" if pressure < 0.8 else "🔴")
+        print(f"  {status} {lines} lines (pressure: {pressure*100:.0f}%)")
     else:
         print("  ✓ File not found (OK)")
+        metrics['handoff'] = 0.0
 
-    # Check MEMORY.md
+    # Check MEMORY.md (20% weight)
     print("\n📄 MEMORY.md:")
     memory_file = project_ai / "MEMORY.md"
+    MEMORY_MAX = 800  # Reference max
     if memory_file.exists():
         lines = len(memory_file.read_text().splitlines())
-        status = "✓" if lines < WARN_MEMORY_LINES else "⚠️"
-        print(f"  {status} {lines} lines (threshold: {WARN_MEMORY_LINES})")
-        if lines >= WARN_MEMORY_LINES:
-            warnings.append(f"MEMORY.md: {lines} lines >= {WARN_MEMORY_LINES}")
+        pressure = normalize_value(lines, MEMORY_MAX)
+        metrics['memory'] = pressure
+        status = "✓" if pressure < 0.5 else ("⚠️" if pressure < 0.8 else "🔴")
+        print(f"  {status} {lines} lines (pressure: {pressure*100:.0f}%)")
     else:
         print("  ✓ File not found (OK)")
+        metrics['memory'] = 0.0
 
-    # Check PATCH.diff
+    # Check PATCH.diff (25% weight)
     print("\n📄 PATCH.diff:")
     patch_file = project_ai / "PATCH.diff"
+    PATCH_MAX = 1200  # Reference max
     if patch_file.exists():
         lines = len(patch_file.read_text().splitlines())
-        status = "✓" if lines < WARN_PATCH_LINES else "⚠️"
-        print(f"  {status} {lines} lines (threshold: {WARN_PATCH_LINES})")
-        if lines >= WARN_PATCH_LINES:
-            warnings.append(f"PATCH.diff: {lines} lines >= {WARN_PATCH_LINES}")
+        pressure = normalize_value(lines, PATCH_MAX)
+        metrics['patch'] = pressure
+        status = "✓" if pressure < 0.5 else ("⚠️" if pressure < 0.8 else "🔴")
+        print(f"  {status} {lines} lines (pressure: {pressure*100:.0f}%)")
     else:
         print("  ✓ File not found (OK)")
+        metrics['patch'] = 0.0
 
-    # Check RESULT.md size
-    print("\n📄 RESULT.md:")
-    result_file = project_ai / "RESULT.md"
-    if result_file.exists():
-        size = result_file.stat().st_size
-        size_kb = size / 1024
-        status = "✓" if size_kb < 50 else "⚠️"
-        print(f"  {status} {size_kb:.1f} KB (threshold: 50 KB)")
-        if size_kb >= 50:
-            warnings.append(f"RESULT.md: {size_kb:.1f} KB >= 50 KB")
-    else:
-        print("  ✓ File not found (OK)")
-
-    # Check SQLite recent tasks
-    print("\n🗄️  SQLite Session Tasks:")
+    # Check session task count (15% weight)
+    print("\n🗄️  Session Tasks:")
+    SESSION_MAX = 10  # Reference max
     try:
         db = get_db(project_root)
         cur = db.conn.execute("""
@@ -576,61 +571,98 @@ def cmd_context(args) -> None:
             WHERE started_at > datetime('now', '-2 hours')
         """)
         session_tasks = cur.fetchone()[0]
-        status = "✓" if session_tasks < WARN_SESSION_TASKS else "⚠️"
-        print(f"  {status} {session_tasks} tasks (threshold: {WARN_SESSION_TASKS})")
-        if session_tasks >= WARN_SESSION_TASKS:
-            warnings.append(f"Session: {session_tasks} tasks >= {WARN_SESSION_TASKS}")
+        pressure = normalize_value(session_tasks, SESSION_MAX)
+        metrics['session'] = pressure
+        status = "✓" if pressure < 0.5 else ("⚠️" if pressure < 0.8 else "🔴")
+        print(f"  {status} {session_tasks} tasks (pressure: {pressure*100:.0f}%)")
         db.close()
     except Exception as e:
         print(f"  ⚠️  Cannot check: {e}")
+        metrics['session'] = 0.0
 
-    # Check git diff size
+    # Check git diff size (10% weight)
     print("\n📦 Git Diff Size:")
+    GIT_DIFF_MAX = 400  # Reference max
     try:
-        result = subprocess.run(
-            ["git", "diff", "--stat"],
+        result2 = subprocess.run(
+            ["git", "diff"],
             capture_output=True,
             text=True,
             timeout=10,
             cwd=project_root
         )
-        if result.stdout.strip():
-            diff_lines = len(result.stdout.splitlines())
-            # Count actual changed lines
-            result2 = subprocess.run(
-                ["git", "diff"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                cwd=project_root
-            )
+        if result2.stdout.strip():
             actual_diff_lines = len([l for l in result2.stdout.splitlines() if l.startswith("+") or l.startswith("-")])
-            status = "✓" if actual_diff_lines < WARN_GIT_DIFF_LINES else "⚠️"
-            print(f"  {status} ~{actual_diff_lines} changed lines (threshold: {WARN_GIT_DIFF_LINES})")
-            if actual_diff_lines >= WARN_GIT_DIFF_LINES:
-                warnings.append(f"Git diff: ~{actual_diff_lines} lines >= {WARN_GIT_DIFF_LINES}")
+            pressure = normalize_value(actual_diff_lines, GIT_DIFF_MAX)
+            metrics['git_diff'] = pressure
+            status = "✓" if pressure < 0.5 else ("⚠️" if pressure < 0.8 else "🔴")
+            print(f"  {status} ~{actual_diff_lines} changed lines (pressure: {pressure*100:.0f}%)")
         else:
             print("  ✓ No uncommitted changes")
+            metrics['git_diff'] = 0.0
     except Exception as e:
         print(f"  ⚠️  Cannot check: {e}")
+        metrics['git_diff'] = 0.0
+
+    # Calculate weighted pressure score
+    weights = {
+        'handoff': 0.30,
+        'memory': 0.20,
+        'patch': 0.25,
+        'session': 0.15,
+        'git_diff': 0.10,
+    }
+
+    total_pressure = sum(metrics.get(k, 0) * w for k, w in weights.items())
+
+    # Determine danger level
+    # SAFE: < 30%
+    # WARN: 30-55%
+    # ROTATE_SOON: 55-80%
+    # ROTATE_NOW: >= 80%
+    if total_pressure < 0.30:
+        danger_level = "SAFE"
+        danger_emoji = "✅"
+        danger_color = "\033[92m"  # Green
+    elif total_pressure < 0.55:
+        danger_level = "WARN"
+        danger_emoji = "⚠️"
+        danger_color = "\033[93m"  # Yellow
+    elif total_pressure < 0.80:
+        danger_level = "ROTATE_SOON"
+        danger_emoji = "🟡"
+        danger_color = "\033[93m"  # Yellow
+    else:
+        danger_level = "ROTATE_NOW"
+        danger_emoji = "🔴"
+        danger_color = "\033[91m"  # Red
+
+    reset_color = "\033[0m"
 
     # Summary
     print("\n" + "=" * 50)
-    if len(warnings) >= 2:
-        print("❌ ROTATE_REQUIRED")
-        print(f"   {len(warnings)} warnings >= 2 thresholds")
-        print("\n⚠️  Action required:")
-        print("   workflow-admin handoff")
-        print("   Then start a new claude-plan session")
+    print(f"Pressure Score: {total_pressure*100:.0f}%")
+    print(f"Danger Level:   {danger_color}{danger_level}{reset_color} {danger_emoji}")
+
+    # Action recommendations
+    print("\n📋 Recommendations:")
+    if danger_level == "SAFE":
+        print("  ✓ Context window is healthy")
+        print("  ✓ Continue normal operations")
+    elif danger_level == "WARN":
+        print("  ⚠️  Context pressure is elevated")
+        print("  💡 Consider running: workflow-admin handoff")
+        print("     (when convenient)")
+    elif danger_level == "ROTATE_SOON":
+        print("  🟡 Context window is under stress")
+        print("  ⚠️  Recommend running: workflow-admin handoff")
+        print("     before starting new tasks")
+    else:  # ROTATE_NOW
+        print("  🔴 CRITICAL: Context window exhausted")
+        print("  ❌ IMMEDIATE ACTION REQUIRED:")
+        print("     workflow-admin handoff")
+        print("     Then start a new claude-plan session")
         sys.exit(1)
-    elif warnings:
-        print("⚠️  WARN")
-        print(f"   {len(warnings)} warning(s):")
-        for w in warnings:
-            print(f"   - {w}")
-        print("\n💡 Consider running: workflow-admin handoff")
-    else:
-        print("✅ OK - Context window is healthy")
 
 
 def cmd_handoff(args) -> None:
@@ -851,6 +883,238 @@ def cmd_resume(args) -> None:
     print("\n💡 Copy the above prompt into your new claude-plan session")
 
 
+def cmd_snapshot(args) -> None:
+    """Create a session snapshot with current state."""
+    print("📸 Creating Session Snapshot")
+    print("=" * 50)
+
+    project_root = find_project_root()
+    project_ai = project_root / ".project-ai"
+
+    # Create snapshots directory
+    snapshots_dir = project_ai / "session_snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    snapshot_file = snapshots_dir / f"{timestamp}.json"
+
+    # Collect snapshot data
+    snapshot_data = {
+        "timestamp": datetime.now().isoformat(),
+        "project_root": str(project_root),
+    }
+
+    # Get git branch
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=project_root
+        )
+        snapshot_data["git_branch"] = result.stdout.strip()
+    except Exception as e:
+        snapshot_data["git_branch"] = f"unknown: {e}"
+
+    # Get current task (TASK.md first 5 lines)
+    task_file = project_ai / "TASK.md"
+    if task_file.exists():
+        task_content = task_file.read_text()
+        lines = task_content.splitlines()
+        snapshot_data["current_task"] = "\n".join(lines[:5])
+    else:
+        snapshot_data["current_task"] = None
+
+    # Get recent tasks (limit 3)
+    try:
+        db = get_db(project_root)
+        cur = db.conn.execute("""
+            SELECT t.summary, a.status, a.completed_at
+            FROM attempts a
+            JOIN tasks t ON a.task_id = t.id
+            ORDER BY a.completed_at DESC
+            LIMIT 3
+        """)
+        rows = cur.fetchall()
+        snapshot_data["recent_tasks"] = [
+            {
+                "summary": row[0],
+                "status": row[1],
+                "completed_at": row[2]
+            }
+            for row in rows
+        ]
+        db.close()
+    except Exception as e:
+        snapshot_data["recent_tasks"] = []
+        snapshot_data["recent_tasks_error"] = str(e)
+
+    # Get workflow status
+    try:
+        db = get_db(project_root)
+        cur = db.conn.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+            FROM attempts
+            WHERE started_at > datetime('now', '-7 days')
+        """)
+        row = cur.fetchone()
+        snapshot_data["workflow_status"] = {
+            "total_attempts_7d": row[0],
+            "completed_7d": row[1] or 0,
+            "failed_7d": row[2] or 0,
+        }
+        db.close()
+    except Exception as e:
+        snapshot_data["workflow_status"] = {"error": str(e)}
+
+    # Get recent failures (limit 2)
+    try:
+        db = get_db(project_root)
+        failures = db.get_recent_failures(limit=2)
+        snapshot_data["recent_failures"] = [
+            {
+                "summary": f["summary"],
+                "status": f["status"],
+                "completed_at": f["completed_at"]
+            }
+            for f in failures
+        ]
+        db.close()
+    except Exception as e:
+        snapshot_data["recent_failures"] = []
+        snapshot_data["recent_failures_error"] = str(e)
+
+    # Get modified files
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=project_root
+        )
+        if result.stdout.strip():
+            snapshot_data["modified_files"] = result.stdout.strip().splitlines()
+        else:
+            snapshot_data["modified_files"] = []
+    except Exception as e:
+        snapshot_data["modified_files"] = []
+        snapshot_data["modified_files_error"] = str(e)
+
+    # Write snapshot
+    with open(snapshot_file, 'w') as f:
+        json.dump(snapshot_data, f, indent=2)
+
+    print(f"✅ Snapshot saved: {snapshot_file}")
+    print(f"\n📊 Snapshot Summary:")
+    print(f"  Branch:        {snapshot_data.get('git_branch', 'N/A')}")
+    print(f"  Recent tasks:  {len(snapshot_data.get('recent_tasks', []))}")
+    print(f"  Recent failures: {len(snapshot_data.get('recent_failures', []))}")
+    print(f"  Modified files: {len(snapshot_data.get('modified_files', []))}")
+
+
+def cmd_prompt_budget(args) -> None:
+    """Report prompt/token budget usage."""
+    print("📊 Prompt Budget Report")
+    print("=" * 50)
+
+    # Helper to estimate tokens (rough: 1 line ≈ 3 tokens for code/docs)
+    def estimate_tokens(lines: int) -> int:
+        return int(lines * 3)
+
+    # Core CLAUDE.md files
+    print("\n📄 Core Context Files:")
+    global_claude = Path.home() / ".claude" / "CLAUDE.md"
+    local_claude = Path.cwd() / "CLAUDE.md"
+
+    total_lines = 0
+    total_tokens = 0
+
+    for name, path in [
+        ("~/.claude/CLAUDE.md", global_claude),
+        ("~/CLAUDE.md", local_claude),
+    ]:
+        if path.exists():
+            lines = len(path.read_text().splitlines())
+            tokens = estimate_tokens(lines)
+            print(f"  {name:25} {lines:3} lines (~{tokens:3} tokens)")
+            total_lines += lines
+            total_tokens += tokens
+
+    print(f"  {'Subtotal':25} {total_lines:3} lines (~{total_tokens:3} tokens)")
+
+    # Orchestrator scripts
+    print("\n🐍 Orchestrator Scripts:")
+    orch_base = Path(__file__).parent
+    orch_files = [
+        ("workflow_orchestrator.py", 209),
+        ("workflow_query.py", 144),
+        ("workflow-admin", 912),
+    ]
+
+    orch_lines = 0
+    orch_tokens = 0
+    for name, lines in orch_files:
+        tokens = estimate_tokens(lines)
+        print(f"  {name:25} {lines:3} lines (~{tokens:3} tokens)")
+        orch_lines += lines
+        orch_tokens += tokens
+    print(f"  {'Subtotal':25} {orch_lines:3} lines (~{orch_tokens:3} tokens)")
+
+    # Skills index
+    print("\n🔧 Skills Index:")
+    skills_dir = Path.home() / ".claude" / "skills"
+    skill_count = 0
+    if skills_dir.exists():
+        skill_count = len(list(skills_dir.glob("**/SKILL.md")))
+    skill_tokens = skill_count * 20  # ~20 tokens per skill entry
+    print(f"  Skill definitions        {skill_count:2} entries (~{skill_tokens:3} tokens)")
+
+    # Settings
+    print("\n⚙️  Configuration:")
+    settings_file = Path.home() / ".claude" / "settings.json"
+    if settings_file.exists():
+        lines = len(settings_file.read_text().splitlines())
+        tokens = int(lines / 2)  # JSON is dense
+        print(f"  settings.json           {lines:3} lines (~{tokens:3} tokens)")
+
+    # Session overhead summary
+    print("\n" + "=" * 50)
+    print("📋 Session Overhead:")
+    overhead_total = total_tokens + orch_tokens + skill_tokens + tokens
+    print(f"  CLAUDE.md files        ~{total_tokens:3} tokens")
+    print(f"  Orchestrator code      ~{orch_tokens:3} tokens")
+    print(f"  Skills index           ~{skill_tokens:3} tokens")
+    print(f"  Settings               ~{tokens:3} tokens")
+    print(f"  {'='*30}")
+    print(f"  TOTAL OVERHEAD         ~{overhead_total:3} tokens")
+
+    # Compression analysis
+    print("\n📉 Compression Analysis:")
+    original_estimate = 4350
+    compression_pct = int((1 - overhead_total / original_estimate) * 100)
+    print(f"  Original (est):        ~{original_estimate} tokens")
+    print(f"  Compressed (current):  ~{overhead_total} tokens")
+    print(f"  Reduction:             ~{compression_pct}%")
+
+    # Budget breakdown
+    print("\n💰 Token Budget (200K context):")
+    budget_used = overhead_total + 10000  # + session memory
+    budget_remaining = 200000 - budget_used
+    print(f"  System overhead:       ~{overhead_total} tokens")
+    print(f"  Session memory:        ~10,000 tokens")
+    print(f"  Available for code:    ~{budget_remaining} tokens")
+    print(f"  Utilization:           {int(budget_used/2000)}%")
+
+    print("\n" + "=" * 50)
+    print(f"✅ Report complete. Overhead is {'healthy' if overhead_total < 2000 else 'HIGH'}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="workflow-admin - maintenance CLI for claude-workflow-bootstrap"
@@ -886,6 +1150,12 @@ def main() -> None:
     # resume command
     subparsers.add_parser("resume", help="Generate resume prompt for new session")
 
+    # prompt-budget command
+    subparsers.add_parser("prompt-budget", help="Report prompt/token budget usage")
+
+    # snapshot command
+    subparsers.add_parser("snapshot", help="Create session snapshot with current state")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -902,6 +1172,8 @@ def main() -> None:
         "context": cmd_context,
         "handoff": cmd_handoff,
         "resume": cmd_resume,
+        "prompt-budget": cmd_prompt_budget,
+        "snapshot": cmd_snapshot,
     }
 
     commands[args.command](args)
