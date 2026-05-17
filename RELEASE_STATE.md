@@ -93,6 +93,22 @@ claude-plan
 - ReviewerWorker - 代码审查
 - TesterWorker - 运行测试
 
+## workflow-admin - 运维工具
+
+**日常维护命令：**
+
+```bash
+workflow-admin health          # 系统健康检查
+workflow-admin metrics         # 指标统计
+workflow-admin failures        # 失败分析
+workflow-admin compact         # 数据压缩
+workflow-admin stuck-workers   # 检查卡住的 workers
+workflow-admin clean           # 清理临时文件
+```
+
+**只读命令：** health, metrics, failures, stuck-workers
+**需要确认：** compact (默认 --dry-run), clean (需要 --apply)
+
 ## mattpocock Skills 白名单
 
 ### 批准安装

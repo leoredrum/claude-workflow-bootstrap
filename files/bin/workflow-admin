@@ -1,0 +1,497 @@
+#!/usr/bin/env python3
+"""workflow-admin - maintenance CLI for claude-workflow-bootstrap."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from workflow_db import get_db
+
+
+def find_project_root() -> Path:
+    """Find project root with .project-ai."""
+    cwd = Path.cwd()
+    while cwd != cwd.parent:
+        if (cwd / ".project-ai").exists():
+            return cwd
+        cwd = cwd.parent
+    return Path.cwd()
+
+
+def check_command_exists(cmd: str) -> bool:
+    """Check if a command is available."""
+    try:
+        subprocess.run(
+            ["which", cmd],
+            capture_output=True,
+            check=False,
+            timeout=5
+        )
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def check_file_exists(path: Path | str) -> bool:
+    """Check if a file exists."""
+    return Path(path).exists()
+
+
+def cmd_health(args) -> None:
+    """Check system health."""
+    print("🔍 System Health Check")
+    print("=" * 50)
+
+    issues = []
+
+    # Check core binaries
+    print("\n📦 Core Binaries:")
+    binaries = [
+        ("claude-plan", "Formal development mode"),
+        ("local-coder", "Local AI executor"),
+        ("workflow-orchestrator", "Workflow orchestration CLI"),
+        ("workflow-query", "Workflow state query"),
+        ("bootstrap-verify", "Installation verification"),
+    ]
+
+    for cmd, desc in binaries:
+        # Check both in PATH and files/bin
+        in_path = check_command_exists(cmd)
+        in_bin = check_file_exists(Path(__file__).parent / cmd)
+        status = "✓" if (in_path or in_bin) else "✗"
+        location = "PATH" if in_path else ("bin" if in_bin else "MISSING")
+        print(f"  {status} {cmd:20} ({desc}) [{location}]")
+        if not (in_path or in_bin):
+            issues.append(f"{cmd} not found")
+
+    # Check Ollama
+    print("\n🦙 Ollama Backend:")
+    ollama_ok = check_command_exists("ollama")
+    print(f"  {'✓' if ollama_ok else '✗'} ollama command      {'Available' if ollama_ok else 'NOT FOUND'}")
+    if not ollama_ok:
+        issues.append("Ollama not installed")
+
+    if ollama_ok:
+        # Check model availability
+        try:
+            result = subprocess.run(
+                ["ollama", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            has_model = "qwen2.5-coder:32b" in result.stdout
+            print(f"  {'✓' if has_model else '✗'} qwen2.5-coder:32b   {'Available' if has_model else 'NOT FOUND'}")
+            if not has_model:
+                issues.append("qwen2.5-coder:32b model not found")
+        except Exception as e:
+            print(f"  ✗ Model check failed: {e}")
+            issues.append("Cannot check Ollama models")
+
+    # Check recent violations
+    print("\n⚠️  Recent Violations:")
+    project_root = find_project_root()
+    project_ai = project_root / ".project-ai"
+
+    violation_file = project_ai / "WORKFLOW_VIOLATIONS.md"
+    if violation_file.exists():
+        content = violation_file.read_text()
+        recent = content.count("## Violation")
+        if recent > 0:
+            print(f"  ⚠️  {recent} violation(s) recorded")
+            # Check recent violations (last 7 days)
+            recent_week = 0
+            for line in content.splitlines():
+                if "## Violation" in line:
+                    # Parse date (simplified)
+                    recent_week += 1
+            if recent_week > 0:
+                print(f"  ⚠️  Total violations: {recent_week}")
+    else:
+        print("  ✓ No violations recorded")
+
+    # Check stuck workers
+    print("\n👷 Worker Status:")
+    try:
+        db = get_db(project_root)
+        cur = db.conn.execute("""
+            SELECT worker_type, status, COUNT(*)
+            FROM worker_registry
+            GROUP BY worker_type, status
+        """)
+        workers = cur.fetchall()
+        if workers:
+            for wtype, status, count in workers:
+                print(f"  {wtype:15} {status:10} {count}")
+        else:
+            print("  ✓ No workers registered")
+    except Exception as e:
+        print(f"  ⚠️  Cannot check workers: {e}")
+
+    # Summary
+    print("\n" + "=" * 50)
+    if issues:
+        print(f"❌ Health Check FAILED - {len(issues)} issue(s):")
+        for issue in issues:
+            print(f"  - {issue}")
+        sys.exit(1)
+    else:
+        print("✅ Health Check PASSED")
+
+
+def cmd_metrics(args) -> None:
+    """Show workflow metrics."""
+    print("📊 Workflow Metrics")
+    print("=" * 50)
+
+    project_root = find_project_root()
+    db = get_db(project_root)
+
+    # Task statistics
+    print("\n📋 Task Statistics:")
+    cur = db.conn.execute("""
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+            SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) as blocked
+        FROM tasks
+        WHERE created_at > datetime('now', '-7 days')
+    """)
+    row = cur.fetchone()
+    if row and row[0] > 0:
+        print(f"  Last 7 days:")
+        print(f"    Total:     {row[0]}")
+        print(f"    Completed: {row[1] or 0}")
+        print(f"    Failed:    {row[2] or 0}")
+        print(f"    Blocked:   {row[3] or 0}")
+    else:
+        print("  No tasks in last 7 days")
+
+    # Attempt statistics (actual executions)
+    print("\n🔄 Attempt Statistics:")
+    cur = db.conn.execute("""
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+            SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) as blocked
+        FROM attempts
+        WHERE started_at > datetime('now', '-7 days')
+    """)
+    row = cur.fetchone()
+    if row and row[0] > 0:
+        total = row[0]
+        completed = row[1] or 0
+        failed = row[2] or 0
+        blocked = row[3] or 0
+        pass_rate = (completed / total * 100) if total > 0 else 0
+        print(f"  Last 7 days:")
+        print(f"    Total:     {total}")
+        print(f"    PASS:      {completed} ({pass_rate:.1f}%)")
+        print(f"    FAILED:    {failed}")
+        print(f"    BLOCKED:   {blocked}")
+    else:
+        print("  No attempts in last 7 days")
+
+    # Patch statistics
+    print("\n📝 Patch Statistics:")
+    cur = db.conn.execute("""
+        SELECT
+            COUNT(*) as total,
+            AVG(LENGTH(patch_content)) as avg_size
+        FROM patches
+        WHERE created_at > datetime('now', '-7 days')
+    """)
+    row = cur.fetchone()
+    if row and row[0] > 0:
+        avg_size = row[1] or 0
+        print(f"  Last 7 days:")
+        print(f"    Patches:   {row[0]}")
+        print(f"    Avg size:  {avg_size:.0f} bytes")
+    else:
+        print("  No patches in last 7 days")
+
+    # Most modified files
+    print("\n📁 Most Modified Files:")
+    cur = db.conn.execute("""
+        SELECT path, COUNT(*) as count
+        FROM files_changed
+        GROUP BY path
+        ORDER BY count DESC
+        LIMIT 5
+    """)
+    rows = cur.fetchall()
+    if rows:
+        for path, count in rows:
+            print(f"    {count:3}  {path}")
+    else:
+        print("  No file changes recorded")
+
+
+    db.close()
+
+
+def cmd_failures(args) -> None:
+    """Show failure taxonomy."""
+    print("🔥 Failure Analysis")
+    print("=" * 50)
+
+    project_root = find_project_root()
+    project_ai = project_root / ".project-ai"
+
+    # Check violations file
+    violation_file = project_ai / "WORKFLOW_VIOLATIONS.md"
+    if violation_file.exists():
+        content = violation_file.read_text()
+        violations = content.count("## Violation")
+        print(f"\n📋 Workflow Violations: {violations}")
+
+        # Categorize violations
+        categories = {
+            "WRONG_TARGET_FILE": 0,
+            "BAD_ANCHOR": 0,
+            "UNSAFE_OVERWRITE": 0,
+            "LOOP_DETECTED": 0,
+            "OTHER": 0
+        }
+
+        for line in content.splitlines():
+            line_lower = line.lower()
+            if "wrong_target" in line_lower or "wrong file" in line_lower:
+                categories["WRONG_TARGET_FILE"] += 1
+            elif "anchor" in line_lower and ("not_found" in line_lower or "ambiguous" in line_lower):
+                categories["BAD_ANCHOR"] += 1
+            elif "unsafe" in line_lower or "overwrite" in line_lower:
+                categories["UNSAFE_OVERWRITE"] += 1
+            elif "loop" in line_lower:
+                categories["LOOP_DETECTED"] += 1
+            elif "## Violation" in line:
+                categories["OTHER"] += 1
+
+        print("\n🏷️  Failure Types:")
+        for category, count in categories.items():
+            if count > 0:
+                print(f"  {category:20} {count}")
+    else:
+        print("\n✓ No violations recorded")
+
+    # Check failure docs
+    failures_dir = project_ai / "docs" / "failures"
+    if failures_dir.exists():
+        failure_files = list(failures_dir.glob("*.md"))
+        if failure_files:
+            print(f"\n📄 Failure Documentation: {len(failure_files)} files")
+            for f in sorted(failure_files):
+                print(f"  - {f.name}")
+
+
+def cmd_compact(args) -> None:
+    """Compact memory/conversation data."""
+    dry_run = getattr(args, 'dry_run', False)
+
+    if dry_run:
+        print("🔍 Compact Dry-Run Mode")
+        print("=" * 50)
+        print("Would compact:")
+        print("  - .project-ai/ATTEMPT_HISTORY.md")
+        print("  - .project-ai/workflow_state.db")
+        print("\nUse --apply to actually compact.")
+        return
+
+    print("🗜️  Compacting Workflow Data")
+    print("=" * 50)
+
+    project_root = find_project_root()
+    compact_script = Path(__file__).parent / "memory_compactor.py"
+
+    if not compact_script.exists():
+        print("❌ memory_compactor.py not found")
+        sys.exit(1)
+
+    # Run compactor
+    try:
+        result = subprocess.run(
+            ["python3", str(compact_script), str(project_root)],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        print(result.stdout)
+        if result.returncode != 0:
+            print(f"❌ Compaction failed: {result.stderr}")
+            sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print("❌ Compaction timed out")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Compaction error: {e}")
+        sys.exit(1)
+
+    print("✅ Compaction complete")
+
+
+def cmd_stuck_workers(args) -> None:
+    """Show stuck/stale workers."""
+    print("👷 Worker Status Check")
+    print("=" * 50)
+
+    project_root = find_project_root()
+    db = get_db(project_root)
+
+    # Get all workers
+    cur = db.conn.execute("""
+        SELECT worker_id, worker_type, status,
+               datetime(last_heartbeat) as heartbeat,
+               datetime(last_heartbeat, '-5 minutes') as stale_time
+        FROM worker_registry
+        ORDER BY last_heartbeat DESC
+    """)
+    workers = cur.fetchall()
+    db.close()
+
+    if not workers:
+        print("✓ No workers registered")
+        return
+
+    now = datetime.now()
+    stuck = []
+
+    print(f"\n{'Worker ID':<25} {'Type':<15} {'Status':<10} {'Last Heartbeat':<20} {'State':<10}")
+    print("-" * 90)
+
+    for worker_id, wtype, status, heartbeat_str, _ in workers:
+        try:
+            if heartbeat_str:
+                heartbeat = datetime.fromisoformat(heartbeat_str.replace(" ", "T"))
+                age = (now - heartbeat).total_seconds()
+                if age > 300:  # 5 minutes
+                    state = "STUCK"
+                    stuck.append(worker_id)
+                elif age > 60:
+                    state = "STALE"
+                else:
+                    state = "OK"
+            else:
+                state = "NO_HEARTBEAT"
+                stuck.append(worker_id)
+            heartbeat_display = heartbeat_str[:19] if heartbeat_str else "N/A"
+        except:
+            state = "ERROR"
+            heartbeat_display = "ERROR"
+
+        print(f"{worker_id:<25} {wtype:<15} {status:<10} {heartbeat_display:<20} {state:<10}")
+
+    if stuck:
+        print(f"\n⚠️  {len(stuck)} stuck worker(s) detected")
+        print("\nTo remove stuck workers, use workflow-query:")
+        for worker_id in stuck:
+            print(f"  workflow-query unregister-worker {worker_id}")
+    else:
+        print("\n✓ All workers healthy")
+
+
+def cmd_clean(args) -> None:
+    """Clean temporary test artifacts."""
+    apply = getattr(args, 'apply', False)
+
+    if not apply:
+        print("🧹 Clean Dry-Run Mode")
+        print("=" * 50)
+        print("Would clean:")
+        print("  - /tmp/edit-mode-test*")
+        print("  - /tmp/*workflow-test*")
+        print("  - /tmp/.claude-* (temp session dirs)")
+        print("\nUse --apply to actually clean.")
+        return
+
+    print("🧹 Cleaning Temporary Artifacts")
+    print("=" * 50)
+
+    import shutil
+
+    cleaned = 0
+
+    # Clean test directories
+    for path in Path("/tmp").glob("edit-mode-test*"):
+        if path.is_dir():
+            print(f"  Removing: {path.name}")
+            shutil.rmtree(path)
+            cleaned += 1
+
+    for path in Path("/tmp").glob("*workflow-test*"):
+        if path.is_dir():
+            print(f"  Removing: {path.name}")
+            shutil.rmtree(path)
+            cleaned += 1
+
+    # Clean temp claude dirs (be careful)
+    for path in Path("/tmp").glob(".claude-*"):
+        if path.is_dir() and "tasks" in str(path):
+            # Only clean if it looks like a temp session
+            tasks_dir = path / "tasks"
+            if tasks_dir.exists():
+                # Check if old (more than 1 day)
+                stat = path.stat()
+                age = (now := datetime.now()).timestamp() - stat.st_mtime
+                if age > 86400:  # 1 day
+                    print(f"  Removing: {path.name} (old)")
+                    shutil.rmtree(path)
+                    cleaned += 1
+
+    print(f"\n✅ Cleaned {cleaned} item(s)")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="workflow-admin - maintenance CLI for claude-workflow-bootstrap"
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # health command
+    subparsers.add_parser("health", help="Check system health")
+
+    # metrics command
+    subparsers.add_parser("metrics", help="Show workflow metrics")
+
+    # failures command
+    subparsers.add_parser("failures", help="Show failure taxonomy")
+
+    # compact command
+    compact_p = subparsers.add_parser("compact", help="Compact workflow data")
+    compact_p.add_argument("--dry-run", action="store_true", help="Show what would be compacted")
+
+    # stuck-workers command
+    subparsers.add_parser("stuck-workers", help="Show stuck/stale workers")
+
+    # clean command
+    clean_p = subparsers.add_parser("clean", help="Clean temporary artifacts")
+    clean_p.add_argument("--apply", action="store_true", help="Actually clean (dry-run by default)")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    commands = {
+        "health": cmd_health,
+        "metrics": cmd_metrics,
+        "failures": cmd_failures,
+        "compact": cmd_compact,
+        "stuck-workers": cmd_stuck_workers,
+        "clean": cmd_clean,
+    }
+
+    commands[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

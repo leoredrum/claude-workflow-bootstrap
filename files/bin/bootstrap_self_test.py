@@ -155,6 +155,7 @@ def check_workflow_components():
         ("orchestrator_worker.py", "Orchestrator worker"),
         ("workflow-query", "Workflow query CLI"),
         ("workflow_query.py", "Workflow query Python"),
+        ("workflow-admin", "Workflow admin CLI"),
         ("memory_compactor.py", "Memory compactor"),
     ]
 

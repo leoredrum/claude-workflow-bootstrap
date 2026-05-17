@@ -39,6 +39,7 @@ ai-project-init                   # 应返回用法说明
 claude-plan                       # 应返回用法说明 (规划工具)
 local-coder                       # 应返回用法说明 (本地编码工具)
 get-secret                        # 应返回用法说明 (密钥管理工具)
+workflow-admin                    # 应返回用法说明 (运维工具)
 
 # 完整安装验证
 bootstrap-verify                  # 运行完整验证检查
@@ -134,6 +135,84 @@ ollama list | grep qwen
 ```bash
 bootstrap-verify --doctor
 ```
+
+## workflow-admin - 系统运维
+
+`workflow-admin` 提供日常维护命令，用于检查系统健康状态和清理临时文件。
+
+### 健康检查
+
+```bash
+workflow-admin health
+```
+
+检查：
+- 核心二进制文件是否存在
+- Ollama 后端是否可用
+- qwen2.5-coder:32b 模型是否存在
+- 最近的工作流违规
+- Worker 状态
+
+### 指标统计
+
+```bash
+workflow-admin metrics
+```
+
+显示：
+- 最近 7 天的任务统计
+- 尝试执行统计（PASS/FAILED/BLOCKED）
+- Patch 大小统计
+- 最常修改的文件
+
+### 失败分析
+
+```bash
+workflow-admin failures
+```
+
+分类显示失败类型：
+- WRONG_TARGET_FILE
+- BAD_ANCHOR
+- UNSAFE_OVERWRITE
+- LOOP_DETECTED
+
+### 数据压缩
+
+```bash
+# 预览压缩操作
+workflow-admin compact --dry-run
+
+# 实际压缩
+workflow-admin compact
+```
+
+压缩：
+- ATTEMPT_HISTORY.md
+- workflow_state.db
+
+### Worker 检查
+
+```bash
+workflow-admin stuck-workers
+```
+
+显示卡住的 worker，提供清理命令。
+
+### 临时文件清理
+
+```bash
+# 预览（默认）
+workflow-admin clean
+
+# 实际清理
+workflow-admin clean --apply
+```
+
+清理：
+- /tmp/edit-mode-test*
+- /tmp/*workflow-test*
+- 旧的 /tmp/.claude-* 临时目录
 
 ## 设计取舍
 
